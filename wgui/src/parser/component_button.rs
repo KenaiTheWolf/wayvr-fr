@@ -95,8 +95,7 @@ pub fn parse_component_button<'a>(
 				}
 			}
 			"sticky" => {
-				let mut sticky_i32 = 0;
-				sticky = ctx.parse_check_i32(tag_name, key, value, &mut sticky_i32) && sticky_i32 == 1;
+				ctx.parse_check_bool(tag_name, key, value, &mut sticky);
 			}
 			"long_press_time" => {
 				long_press_time = parse_f32(value).unwrap_or(long_press_time);

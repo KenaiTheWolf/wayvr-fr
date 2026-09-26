@@ -324,7 +324,7 @@ pub fn openxr_run(args: &Args, params: RunParams) -> Result<(), BackendError> {
         )?;
 
         let ipd = helpers::ipd_from_views(&views);
-        if (app.input_state.ipd - ipd).abs() > 0.05 {
+        if (app.input_state.ipd - ipd).abs() > 0.5 {
             log::info!("IPD changed: {} -> {}", app.input_state.ipd, ipd);
             app.input_state.ipd = ipd;
             Toast::new(

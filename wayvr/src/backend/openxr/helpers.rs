@@ -140,6 +140,22 @@ pub(super) fn init_xr() -> Result<(xr::Instance, xr::SystemId, ExtraExts), anyho
         instance_props.runtime_version
     );
 
+    let available_extensions = available_extensions
+        .names()
+        .into_iter()
+        .filter_map(|name| {
+            Some(
+                CStr::from_bytes_with_nul(name)
+                    .ok()?
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    log::debug!("Available OpenXR extensions:\n{available_extensions}");
+
     let enabled_extensions = enabled_extensions
         .names()
         .into_iter()
@@ -154,7 +170,7 @@ pub(super) fn init_xr() -> Result<(xr::Instance, xr::SystemId, ExtraExts), anyho
         .collect::<Vec<_>>()
         .join("\n");
 
-    log::info!("OpenXR extensions:\n{enabled_extensions}");
+    log::debug!("Enabled OpenXR extensions:\n{enabled_extensions}");
 
     let Ok(system) = xr_instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY) else {
         bail!("Failed to access OpenXR HMD system.");

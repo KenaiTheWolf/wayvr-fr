@@ -18,7 +18,9 @@ use wgui::{
 };
 use wlx_common::{
 	config_io,
-	openxr_actions::{OneOrMany, OpenXrInputAction, OpenXrInputProfile, load_xr_input_profiles},
+	openxr_actions::{
+		OneOrMany, OpenXrInputAction, OpenXrInputChordMember, OpenXrInputProfile, load_xr_input_profiles,
+	},
 	openxr_bindings_schema::{
 		DEFAULT_BUTTON_THRESHOLDS, XrControllerProfile, XrInputComponent, XrInputSide, XrInputSubpathKind,
 	},
@@ -41,6 +43,9 @@ enum Task {
 	Cancel,
 	OpenContextMenu(glam::Vec2, Vec<context_menu::Cell>),
 	UpdateThreshold(Rc<str>, XrInputSide, usize, f32),
+	AddChordMember(Rc<str>, XrInputSide),
+	RemoveChordMember(Rc<str>, XrInputSide, usize),
+	UpdateChordThreshold(Rc<str>, XrInputSide, usize, usize, f32),
 }
 
 pub struct Params<'a> {
@@ -100,53 +105,115 @@ impl ViewTrait for View {
 					};
 
 					threshold[i] = val;
-					log::warn!("UpdateThreshold {action_name} {side:?} {threshold:?}");
+				}
+				Task::AddChordMember(action_name, output_side) => {
+					if let Some(member) = default_chord_member(self.controller_profile, output_side) {
+						let cur_profile = &mut self.profiles[self.cur_profile_idx];
+						let action_mut = get_action_mut(cur_profile, &action_name);
+						action_chord_mut(action_mut, output_side)
+							.get_or_insert_default()
+							.push(member);
+						self.refresh(par.layout)?;
+					}
+				}
+				Task::RemoveChordMember(action_name, output_side, member_idx) => {
+					let cur_profile = &mut self.profiles[self.cur_profile_idx];
+					let action_mut = get_action_mut(cur_profile, &action_name);
+					let chord = action_chord_mut(action_mut, output_side);
+					let chord_empty = if let Some(members) = chord.as_mut()
+						&& member_idx < members.len()
+					{
+						members.remove(member_idx);
+						members.is_empty()
+					} else {
+						false
+					};
+					if chord_empty {
+						*chord = None;
+					}
+					self.refresh(par.layout)?;
+				}
+				Task::UpdateChordThreshold(action_name, output_side, member_idx, i, val) => {
+					let cur_profile = &mut self.profiles[self.cur_profile_idx];
+					let action_mut = get_action_mut(cur_profile, &action_name);
+					if let Some(member) = action_chord_mut(action_mut, output_side)
+						.as_mut()
+						.and_then(|members| members.get_mut(member_idx))
+					{
+						let mut threshold = member.threshold().unwrap_or(DEFAULT_BUTTON_THRESHOLDS);
+						threshold[i] = val;
+						set_chord_member_threshold(member, threshold);
+					}
 				}
 			}
 		}
 
 		// Dropdown handling
-		if let TickResult::Action(name) = self.context_menu.tick(par.layout, &mut self.parser_state)?
-			&& let (Some(action), Some(action_name), Some(side), Some(value)) = {
-				let mut s = name.splitn(4, ';');
-				(s.next(), s.next(), s.next(), s.next())
-			} {
+		if let TickResult::Action(name) = self.context_menu.tick(par.layout, &mut self.parser_state)? {
+			let parts = name.split(';').collect::<Vec<_>>();
 			let cur_profile = &mut self.profiles[self.cur_profile_idx];
-			let action_mut = get_action_mut(cur_profile, action_name);
-			let side_mut = if side == "right" {
-				&mut action_mut.right
-			} else {
-				&mut action_mut.left
-			};
 
-			match action {
-				"clear" => {
-					*side_mut = None;
-				}
-				"subpath" => {
-					apply_subpath(side_mut, side, value, self.controller_profile);
-				}
-				"comp" => {
-					apply_comp(side_mut, side, value);
-				}
-				"click" => match value {
-					"triple" => {
-						action_mut.triple_click = Some(true);
-						action_mut.double_click = None;
+			match parts.as_slice() {
+				[action, action_name, side, value] => {
+					let action_mut = get_action_mut(cur_profile, action_name);
+
+					match *action {
+						"clear" => {
+							*action_binding_mut(action_mut, side) = None;
+						}
+						"subpath" => {
+							apply_subpath(
+								action_binding_mut(action_mut, side),
+								side,
+								value,
+								self.controller_profile,
+							);
+						}
+						"comp" => {
+							apply_comp(action_binding_mut(action_mut, side), side, value);
+						}
+						"click" => apply_click_count(action_mut, value),
+						_ => log::warn!("Unknown action {action}"),
 					}
-					"double" => {
-						action_mut.triple_click = None;
-						action_mut.double_click = Some(true);
+					self.refresh(par.layout)?;
+				}
+				[kind, action_name, output_side, member_idx, value] => {
+					let (Ok(output_side), Ok(member_idx)) = (
+						XrInputSide::try_from(*output_side),
+						member_idx.parse::<usize>(),
+					) else {
+						return Ok(());
+					};
+					let action_mut = get_action_mut(cur_profile, action_name);
+					let Some(member) = action_chord_mut(action_mut, output_side)
+						.as_mut()
+						.and_then(|members| members.get_mut(member_idx))
+					else {
+						return Ok(());
+					};
+
+					match *kind {
+						"chord_hand" => {
+							if let Ok(side) = XrInputSide::try_from(*value) {
+								apply_chord_hand(member, side, self.controller_profile);
+							}
+						}
+						"chord_subpath" => {
+							if let Ok(subpath) = XrInputSubpathKind::try_from(*value) {
+								apply_chord_subpath(member, subpath, self.controller_profile);
+							}
+						}
+						"chord_comp" => {
+							if let Ok(component) = XrInputComponent::try_from(*value) {
+								apply_chord_component(member, component);
+							}
+						}
+						_ => log::warn!("Unknown chord action {kind}"),
 					}
-					_ => {
-						action_mut.triple_click = None;
-						action_mut.double_click = None;
-					}
-				},
-				_ => log::warn!("Unknown action {action}"),
+					self.refresh(par.layout)?;
+				}
+				_ => log::warn!("Malformed bindings context action: {name}"),
 			}
-
-			self.refresh(par.layout)?;
 		}
 
 		Ok(())
@@ -413,6 +480,186 @@ fn input_controls_for_action(
 		},
 	)?;
 
+	if &*action != "scroll" {
+		if is_side_agnostic_action(action.as_ref()) {
+			chord_controls_for_output(
+				mp,
+				parent,
+				&action,
+				XrInputSide::Left,
+				current.left_chord.as_deref(),
+				click_type,
+				profile,
+				false,
+			)?;
+		} else {
+			for output_side in [XrInputSide::Left, XrInputSide::Right] {
+				if profile.find_userpath(output_side).is_none() {
+					continue;
+				}
+				let chord = if matches!(output_side, XrInputSide::Right) {
+					current.right_chord.as_deref()
+				} else {
+					current.left_chord.as_deref()
+				};
+				chord_controls_for_output(
+					mp,
+					parent,
+					&action,
+					output_side,
+					chord,
+					click_type,
+					profile,
+					true,
+				)?;
+			}
+		}
+	}
+
+	Ok(())
+}
+
+fn is_side_agnostic_action(action: &str) -> bool {
+	matches!(action, "show_hide" | "toggle_dashboard")
+}
+
+fn chord_controls_for_output(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: &Rc<str>,
+	output_side: XrInputSide,
+	members: Option<&[OpenXrInputChordMember]>,
+	click_type: ClickType,
+	profile: &XrControllerProfile,
+	show_output_side: bool,
+) -> anyhow::Result<()> {
+	let header = horiz_cell(mp.layout, parent)?;
+
+	if show_output_side {
+		wgui_simple::create_icon(
+			mp.layout,
+			header,
+			Vec2::new(24.0, 24.0),
+			AssetPathRef::BuiltIn(&format!("dashboard/hand_{}.svg", output_side.as_ref())),
+		)?;
+		wgui_simple::create_label(mp.layout, header, side_translation(output_side))?;
+	}
+
+	wgui_simple::create_label(
+		mp.layout,
+		header,
+		Translation::from_translation_key("APP_SETTINGS.BINDINGS.CHORD"),
+	)?;
+	clicks_dropdown(mp, header, action.clone(), click_type)?;
+
+	let tasks = mp.tasks.clone();
+	let action_for_add = action.clone();
+	wgui_simple::create_button(wgui_simple::CreateButtonParams {
+		id_parent: header,
+		layout: mp.layout,
+		content: Translation::from_translation_key("APP_SETTINGS.BINDINGS.CHORD_ADD_INPUT"),
+		icon_builtin: AssetPathRef::BuiltIn("dashboard/add.svg"),
+		on_click: Rc::new(move |_common, _event| {
+			tasks.push(Task::AddChordMember(action_for_add.clone(), output_side));
+			Ok(())
+		}),
+	})?;
+
+	for (member_idx, member) in members.unwrap_or_default().iter().enumerate() {
+		chord_member_controls(mp, parent, action, output_side, member_idx, member, profile)?;
+	}
+
+	Ok(())
+}
+
+fn chord_member_controls(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: &Rc<str>,
+	output_side: XrInputSide,
+	member_idx: usize,
+	member: &OpenXrInputChordMember,
+	profile: &XrControllerProfile,
+) -> anyhow::Result<()> {
+	let row = horiz_cell(mp.layout, parent)?;
+	let parsed = ParsedOpenXrInputPath::try_from(member.path()).log_warn(member.path()).ok();
+	let physical_side = parsed.as_ref().map(|x| x.side).unwrap_or(output_side);
+
+	chord_hand_dropdown(mp, row, action.clone(), output_side, member_idx, profile, physical_side)?;
+
+	let available_subpaths: Rc<[XrInputSubpathKind]> = profile
+		.find_userpath(physical_side)
+		.map(|user_path| {
+			user_path
+				.paths
+				.iter()
+				.filter(|x| !x.kind.get_bool("Hidden").unwrap_or_default())
+				.map(|x| x.kind)
+				.collect::<Vec<_>>()
+				.into()
+		})
+		.unwrap_or_default();
+
+	chord_subpath_dropdown(
+		mp,
+		row,
+		action.clone(),
+		output_side,
+		member_idx,
+		available_subpaths,
+		parsed.as_ref().map(|x| x.subpath),
+	)?;
+
+	let available_components: Rc<[XrInputComponent]> = parsed
+		.as_ref()
+		.and_then(|parsed| {
+			profile
+				.find_userpath(parsed.side)
+				.and_then(|user_path| user_path.find_subpath(parsed.subpath))
+		})
+		.map(|subpath| subpath.components)
+		.unwrap_or_default()
+		.into();
+
+	chord_component_dropdown(
+		mp,
+		row,
+		action.clone(),
+		output_side,
+		member_idx,
+		available_components,
+		parsed.as_ref().map(|x| x.component),
+	)?;
+
+	let tasks = mp.tasks.clone();
+	let action_for_remove = action.clone();
+	wgui_simple::create_button(wgui_simple::CreateButtonParams {
+		id_parent: row,
+		layout: mp.layout,
+		content: Translation::from_raw_text(""),
+		icon_builtin: AssetPathRef::BuiltIn("dashboard/trash.svg"),
+		on_click: Rc::new(move |_common, _event| {
+			tasks.push(Task::RemoveChordMember(
+				action_for_remove.clone(),
+				output_side,
+				member_idx,
+			));
+			Ok(())
+		}),
+	})?;
+
+	// put threshold slider on its own row
+	if parsed.as_ref().is_some_and(|x| x.component.is_analog()) {
+		chord_threshold_slider(
+			mp,
+			parent,
+			action.clone(),
+			output_side,
+			member_idx,
+			member.threshold(),
+		)?;
+	}
+
 	Ok(())
 }
 
@@ -552,6 +799,178 @@ fn clicks_dropdown(mp: &mut MacroParams, parent: WidgetID, action: Rc<str>, curr
 	Ok(())
 }
 
+fn side_translation(side: XrInputSide) -> Translation {
+	Translation::from_translation_key(match side {
+		XrInputSide::Left => "APP_SETTINGS.BINDINGS.LEFT",
+		XrInputSide::Right => "APP_SETTINGS.BINDINGS.RIGHT",
+	})
+}
+
+fn chord_hand_dropdown(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: Rc<str>,
+	output_side: XrInputSide,
+	member_idx: usize,
+	profile: &XrControllerProfile,
+	current: XrInputSide,
+) -> anyhow::Result<()> {
+	let mut params = TemplateParams::new();
+	params.insert("tooltip", "APP_SETTINGS.BINDINGS.CHORD_INPUT_HAND");
+	params.insert("min_width", "100");
+
+	let cells = [XrInputSide::Left, XrInputSide::Right]
+		.into_iter()
+		.filter(|side| profile.find_userpath(*side).is_some())
+		.map(|side| context_menu::Cell {
+			action_name: Some(
+				format!(
+					"chord_hand;{};{};{};{}",
+					action,
+					output_side.as_ref(),
+					member_idx,
+					side.as_ref()
+				)
+				.into(),
+			),
+			title: side_translation(side),
+			tooltip: None,
+			attribs: vec![],
+		})
+		.collect();
+
+	create_dropdown_with_cells(mp, parent, params, side_translation(current), cells)
+}
+
+fn chord_subpath_dropdown(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: Rc<str>,
+	output_side: XrInputSide,
+	member_idx: usize,
+	available: Rc<[XrInputSubpathKind]>,
+	current: Option<XrInputSubpathKind>,
+) -> anyhow::Result<()> {
+	let mut params = TemplateParams::new();
+	params.insert("tooltip", "APP_SETTINGS.BINDINGS.SUBPATH");
+	params.insert("min_width", "100");
+
+	let current_text = current
+		.map(|subpath| subpath.translation())
+		.unwrap_or_else(|| Translation::from_translation_key("APP_SETTINGS.OPTION.NONE"));
+	let cells = available
+		.iter()
+		.map(|subpath| context_menu::Cell {
+			action_name: Some(
+				format!(
+					"chord_subpath;{};{};{};{}",
+					action,
+					output_side.as_ref(),
+					member_idx,
+					subpath.as_ref()
+				)
+				.into(),
+			),
+			title: subpath.translation(),
+			tooltip: None,
+			attribs: vec![],
+		})
+		.collect();
+
+	create_dropdown_with_cells(mp, parent, params, current_text, cells)
+}
+
+fn chord_component_dropdown(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: Rc<str>,
+	output_side: XrInputSide,
+	member_idx: usize,
+	available: Rc<[XrInputComponent]>,
+	current: Option<XrInputComponent>,
+) -> anyhow::Result<bool> {
+	if available.is_empty() {
+		return Ok(false);
+	}
+
+	let mut params = TemplateParams::new();
+	params.insert("text", "・");
+	params.insert("tooltip", "APP_SETTINGS.BINDINGS.COMPONENT");
+	params.insert("min_width", "100");
+
+	let current_text = current
+		.map(|component| component.translation())
+		.unwrap_or_else(|| Translation::from_raw_text_rc(Default::default()));
+	let cells = available
+		.iter()
+		.map(|component| context_menu::Cell {
+			action_name: Some(
+				format!(
+					"chord_comp;{};{};{};{}",
+					action,
+					output_side.as_ref(),
+					member_idx,
+					component.as_ref()
+				)
+				.into(),
+			),
+			title: component.translation(),
+			tooltip: None,
+			attribs: vec![],
+		})
+		.collect();
+
+	create_dropdown_with_cells(mp, parent, params, current_text, cells)?;
+	Ok(true)
+}
+
+fn chord_threshold_slider(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	action: Rc<str>,
+	output_side: XrInputSide,
+	member_idx: usize,
+	current: Option<[f32; 2]>,
+) -> anyhow::Result<()> {
+	let id = mp.idx.to_string();
+	mp.idx += 1;
+
+	let current = current.unwrap_or(DEFAULT_BUTTON_THRESHOLDS);
+
+	let mut params = TemplateParams::new();
+	params.insert("id", &id);
+	params.insert("tooltip", "APP_SETTINGS.BINDINGS.THRESHOLD");
+	params.insert_str("value", format!("{:.2}", current[0]));
+	params.insert_str("value2", format!("{:.2}", current[1]));
+	params.insert("min", "0.0");
+	params.insert("max", "1.0");
+	params.insert("step", "0.1");
+
+	mp.parser_state
+		.instantiate_template(mp.doc_params, "ThresholdSlider", mp.layout, parent, params)?;
+
+	let slider = mp.parser_state.fetch_component_as::<ComponentSlider>(&id)?;
+	slider.on_value_changed(Box::new({
+		let tasks = mp.tasks.clone();
+		move |_common, e| {
+			let threshold_idx = if matches!(e.index, wgui::components::slider::ValueIndex::Primary) {
+				0
+			} else {
+				1
+			};
+			tasks.push(Task::UpdateChordThreshold(
+				action.clone(),
+				output_side,
+				member_idx,
+				threshold_idx,
+				e.value,
+			));
+		}
+	}));
+
+	Ok(())
+}
+
 fn threshold_slider(
 	mp: &mut MacroParams,
 	parent: WidgetID,
@@ -594,11 +1013,43 @@ fn threshold_slider(
 fn create_dropdown<B: 'static + BindingsDropdown>(
 	mp: &mut MacroParams,
 	parent: WidgetID,
-	mut params: TemplateParams,
+	params: TemplateParams,
 	action: Rc<str>,
 	side: XrInputSide,
 	current_text: Translation,
 	available: Rc<[B]>,
+) -> anyhow::Result<()> {
+	let mut cells = available
+		.iter()
+		.map(|item| context_menu::Cell {
+			action_name: Some(item.action_str(&action, side)),
+			title: item.translation(),
+			tooltip: None,
+			attribs: vec![],
+		})
+		.collect::<Vec<_>>();
+
+	if let Some(action_str) = B::clear_str(&action, side) {
+		cells.insert(
+			0,
+			context_menu::Cell {
+				action_name: Some(action_str),
+				title: Translation::from_translation_key("APP_SETTINGS.OPTION.NONE"),
+				tooltip: None,
+				attribs: vec![],
+			},
+		);
+	}
+
+	create_dropdown_with_cells(mp, parent, params, current_text, cells)
+}
+
+fn create_dropdown_with_cells(
+	mp: &mut MacroParams,
+	parent: WidgetID,
+	mut params: TemplateParams,
+	current_text: Translation,
+	cells: Vec<context_menu::Cell>,
 ) -> anyhow::Result<()> {
 	let id = mp.idx.to_string();
 	mp.idx += 1;
@@ -617,35 +1068,12 @@ fn create_dropdown<B: 'static + BindingsDropdown>(
 	let btn = mp.parser_state.fetch_component_as::<ComponentButton>(&id)?;
 	btn.on_click(Rc::new({
 		let tasks = mp.tasks.clone();
-		let available = available.clone();
+		let cells = cells.clone();
 		move |_common, e: ButtonClickEvent| {
-			let mut cells = available
-				.iter()
-				.map(|item| {
-					let title = item.translation();
-
-					context_menu::Cell {
-						action_name: Some(item.action_str(&action, side)),
-						title,
-						tooltip: None,
-						attribs: vec![],
-					}
-				})
-				.collect::<Vec<_>>();
-
-			if let Some(action_str) = B::clear_str(&action, side) {
-				cells.insert(
-					0,
-					context_menu::Cell {
-						action_name: Some(action_str),
-						title: Translation::from_translation_key("APP_SETTINGS.OPTION.NONE"),
-						tooltip: None,
-						attribs: vec![],
-					},
-				);
-			}
-
-			tasks.push(Task::OpenContextMenu(e.mouse_pos_absolute.unwrap_or_default(), cells));
+			tasks.push(Task::OpenContextMenu(
+				e.mouse_pos_absolute.unwrap_or_default(),
+				cells.clone(),
+			));
 			Ok(())
 		}
 	}));
@@ -709,4 +1137,179 @@ fn apply_comp(side_mut: &mut Option<OneOrMany<String>>, side: &str, comp: &str) 
 	let subpath = parsed.subpath.as_ref();
 
 	*side_mut = Some(OneOrMany::One(format!("/user/hand/{side}/input/{subpath}/{comp}")));
+}
+
+fn action_chord_mut(
+	action: &mut OpenXrInputAction,
+	output_side: XrInputSide,
+) -> &mut Option<Vec<OpenXrInputChordMember>> {
+	match output_side {
+		XrInputSide::Left => &mut action.left_chord,
+		XrInputSide::Right => &mut action.right_chord,
+	}
+}
+
+fn action_binding_mut<'a>(
+	action: &'a mut OpenXrInputAction,
+	side: &str,
+) -> &'a mut Option<OneOrMany<String>> {
+	if side == "right" {
+		&mut action.right
+	} else {
+		&mut action.left
+	}
+}
+
+fn apply_click_count(action: &mut OpenXrInputAction, value: &str) {
+	match value {
+		"triple" => {
+			action.triple_click = Some(true);
+			action.double_click = None;
+		}
+		"double" => {
+			action.triple_click = None;
+			action.double_click = Some(true);
+		}
+		_ => {
+			action.triple_click = None;
+			action.double_click = None;
+		}
+	}
+}
+
+fn default_chord_member(
+	profile: &XrControllerProfile,
+	preferred_side: XrInputSide,
+) -> Option<OpenXrInputChordMember> {
+	let other_side = match preferred_side {
+		XrInputSide::Left => XrInputSide::Right,
+		XrInputSide::Right => XrInputSide::Left,
+	};
+
+	for side in [preferred_side, other_side] {
+		let Some(user_path) = profile.find_userpath(side) else {
+			continue;
+		};
+		let Some(subpath) = user_path
+			.paths
+			.iter()
+			.find(|subpath| !subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty())
+		else {
+			continue;
+		};
+		let component = *subpath.components.first()?;
+		return Some(OpenXrInputChordMember::Path(format!(
+			"/user/hand/{}/input/{}/{}",
+			side.as_ref(),
+			subpath.kind.as_ref(),
+			component.as_ref()
+		)));
+	}
+
+	None
+}
+
+fn set_chord_member_path(
+	member: &mut OpenXrInputChordMember,
+	path: String,
+	component: XrInputComponent,
+) {
+	let threshold = if component.is_analog() {
+		member.threshold()
+	} else {
+		None
+	};
+
+	*member = if threshold.is_some() {
+		OpenXrInputChordMember::Detailed { path, threshold }
+	} else {
+		OpenXrInputChordMember::Path(path)
+	};
+}
+
+fn set_chord_member_threshold(member: &mut OpenXrInputChordMember, threshold: [f32; 2]) {
+	*member = OpenXrInputChordMember::Detailed {
+		path: member.path().to_owned(),
+		threshold: Some(threshold),
+	};
+}
+
+fn apply_chord_hand(
+	member: &mut OpenXrInputChordMember,
+	side: XrInputSide,
+	profile: &XrControllerProfile,
+) {
+	let parsed = ParsedOpenXrInputPath::try_from(member.path()).ok();
+	let Some(user_path) = profile.find_userpath(side) else {
+		return;
+	};
+
+	let subpath = parsed
+		.and_then(|parsed| user_path.find_subpath(parsed.subpath))
+		.filter(|subpath| !subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty())
+		.or_else(|| {
+			user_path.paths.iter().find(|subpath| {
+				!subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty()
+			})
+		});
+	let Some(subpath) = subpath else {
+		return;
+	};
+
+	let component = parsed
+		.map(|parsed| parsed.component)
+		.filter(|component| subpath.components.contains(component))
+		.unwrap_or(subpath.components[0]);
+	let path = format!(
+		"/user/hand/{}/input/{}/{}",
+		side.as_ref(),
+		subpath.kind.as_ref(),
+		component.as_ref()
+	);
+	set_chord_member_path(member, path, component);
+}
+
+fn apply_chord_subpath(
+	member: &mut OpenXrInputChordMember,
+	subpath: XrInputSubpathKind,
+	profile: &XrControllerProfile,
+) {
+	let Ok(parsed) = ParsedOpenXrInputPath::try_from(member.path()) else {
+		return;
+	};
+	let Some(subpath_obj) = profile
+		.find_userpath(parsed.side)
+		.and_then(|user_path| user_path.find_subpath(subpath))
+	else {
+		return;
+	};
+	let Some(first_component) = subpath_obj.components.first().copied() else {
+		return;
+	};
+
+	let component = if subpath_obj.components.contains(&parsed.component) {
+		parsed.component
+	} else {
+		first_component
+	};
+	let path = format!(
+		"/user/hand/{}/input/{}/{}",
+		parsed.side.as_ref(),
+		subpath.as_ref(),
+		component.as_ref()
+	);
+	set_chord_member_path(member, path, component);
+}
+
+fn apply_chord_component(member: &mut OpenXrInputChordMember, component: XrInputComponent) {
+	let Ok(parsed) = ParsedOpenXrInputPath::try_from(member.path()) else {
+		return;
+	};
+	let path = format!(
+		"/user/hand/{}/input/{}/{}",
+		parsed.side.as_ref(),
+		parsed.subpath.as_ref(),
+		component.as_ref()
+	);
+	set_chord_member_path(member, path, component);
 }

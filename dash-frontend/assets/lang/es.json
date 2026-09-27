@@ -97,7 +97,10 @@
 			"RIGHT": "Derecha",
 			"COMPONENT": "Tipo de accionamiento",
 			"SUBPATH": "Control a accionar",
-			"THRESHOLD": "Activar al superar el valor superior\nDesactivar al caer bajo el valor inferior"
+			"THRESHOLD": "Activar al superar el valor superior\nDesactivar al caer bajo el valor inferior",
+			"CHORD": "Acorde",
+			"CHORD_ADD_INPUT": "Añadir entrada al acorde",
+			"CHORD_INPUT_HAND": "Mano de entrada"
 		},
 		"BROWSE_ONLINE_CATALOG": "Explorar catálogo en línea...",
 		"BROWSE_SKYMAPS": "Explorar skymaps",

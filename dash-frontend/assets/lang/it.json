@@ -97,7 +97,10 @@
 			"RIGHT": "Destro",
 			"COMPONENT": "Tipo di attuazione",
 			"SUBPATH": "Comando di attivazione",
-			"THRESHOLD": "Attiva sopra il valore superiore\nDisattiva sotto il valore inferiore"
+			"THRESHOLD": "Attiva sopra il valore superiore\nDisattiva sotto il valore inferiore",
+			"CHORD": "Combinazione",
+			"CHORD_ADD_INPUT": "Aggiungi input combinazione",
+			"CHORD_INPUT_HAND": "Mano di input"
 		},
 		"BROWSE_ONLINE_CATALOG": "Sfoglia catalogo online...",
 		"BROWSE_SKYMAPS": "Sfoglia skymap",

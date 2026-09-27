@@ -97,7 +97,10 @@
 			"RIGHT": "Rechts",
 			"COMPONENT": "Aktivierungsart",
 			"SUBPATH": "Bedienelement",
-			"THRESHOLD": "Aktivieren bei Überschreiten des oberen Wertes\nDeaktivieren bei Unterschreiten des unteren Wertes"
+			"THRESHOLD": "Aktivieren bei Überschreiten des oberen Wertes\nDeaktivieren bei Unterschreiten des unteren Wertes",
+			"CHORD": "Chord",
+			"CHORD_ADD_INPUT": "Chord-Input hinzufügen",
+			"CHORD_INPUT_HAND": "Eingabehand"
 		},
 		"BROWSE_ONLINE_CATALOG": "Online-Katalog durchsuchen...",
 		"BROWSE_SKYMAPS": "Skymaps durchsuchen",

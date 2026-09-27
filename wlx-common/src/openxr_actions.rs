@@ -11,6 +11,32 @@ pub enum OneOrMany<T> {
 	Many(Vec<T>),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenXrInputChordMember {
+	Path(String),
+	Detailed {
+		path: String,
+		#[serde(skip_serializing_if = "Option::is_none")]
+		threshold: Option<[f32; 2]>,
+	},
+}
+
+impl OpenXrInputChordMember {
+	pub fn path(&self) -> &str {
+		match self {
+			Self::Path(path) | Self::Detailed { path, .. } => path,
+		}
+	}
+
+	pub fn threshold(&self) -> Option<[f32; 2]> {
+		match self {
+			Self::Path(_) => None,
+			Self::Detailed { threshold, .. } => *threshold,
+		}
+	}
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct OpenXrInputAction {
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -19,6 +45,10 @@ pub struct OpenXrInputAction {
 	pub right: Option<OneOrMany<String>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub handsfree: Option<OneOrMany<String>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub left_chord: Option<Vec<OpenXrInputChordMember>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub right_chord: Option<Vec<OpenXrInputChordMember>>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub threshold_left: Option<[f32; 2]>,
 	#[serde(skip_serializing_if = "Option::is_none")]

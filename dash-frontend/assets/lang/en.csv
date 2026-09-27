@@ -74,6 +74,9 @@ APP_SETTINGS.BINDINGS.ACTION.MOVE_MOUSE,Move mouse (if off by default),Label for
 APP_SETTINGS.BINDINGS.ACTION.SCROLL,Scroll*,Label for the scroll action row. Maps controller input to scrolling. Leave the '*' at the end.
 APP_SETTINGS.BINDINGS.LEFT,Left,Label in the bindings editor. Refers to the left controller/hand configuration.
 APP_SETTINGS.BINDINGS.RIGHT,Right,Label in the bindings editor. Refers to the right controller/hand configuration.
+APP_SETTINGS.BINDINGS.CHORD,Chord,Label for a group of controller inputs that must all be active together. As in Input Chord
+APP_SETTINGS.BINDINGS.CHORD_ADD_INPUT,Add chord input,"Button in the controller bindings editor that adds another physical input to a chord. ""Chord"" was previously translated as ""${APP_SETTINGS.BINDINGS.CHORD}""."
+APP_SETTINGS.BINDINGS.CHORD_INPUT_HAND,Input hand,"Selector for the hand to which we will be binding the input action to."
 APP_SETTINGS.BINDINGS.COMPONENT,Actuation type,"Tooltip for the component dropdown in the bindings editor. Asks user to select what type of actuation (click, touch, axis, etc.)."
 APP_SETTINGS.BINDINGS.SUBPATH,Actuating control,Tooltip for the subpath dropdown in the bindings editor. Asks user to select which controller button/stick/trackpad to bind.
 APP_SETTINGS.BINDINGS.THRESHOLD,"Activate when above upper value

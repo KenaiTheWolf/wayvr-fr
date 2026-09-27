@@ -95,6 +95,9 @@
 			},
 			"LEFT": "Left",
 			"RIGHT": "Right",
+			"CHORD": "Chord",
+			"CHORD_ADD_INPUT": "Add chord input",
+			"CHORD_INPUT_HAND": "Input hand",
 			"COMPONENT": "Actuation type",
 			"SUBPATH": "Actuating control",
 			"THRESHOLD": "Activate when above upper value\nDeactivate when below lower value"

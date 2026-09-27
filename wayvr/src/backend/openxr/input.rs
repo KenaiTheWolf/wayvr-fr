@@ -1,5 +1,5 @@
 use std::{
-    array::from_fn,
+    collections::HashMap,
     mem::transmute,
     time::{Duration, Instant},
 };
@@ -9,7 +9,10 @@ use libmonado::{self as mnd, DeviceLogic};
 use openxr::{self as xr, Quaternionf, Vector2f, Vector3f};
 use wlx_common::{
     config::HandsfreePointer,
-    openxr_actions::{OneOrMany, load_xr_input_profiles},
+    openxr_actions::{
+        OneOrMany, OpenXrInputAction, OpenXrInputChordMember, OpenXrInputProfile,
+        load_xr_input_profiles,
+    },
     openxr_bindings_schema::DEFAULT_BUTTON_THRESHOLDS,
 };
 
@@ -30,6 +33,7 @@ static CLICK_TIMES: [Duration; 3] = [
 
 pub(super) struct OpenXrInputSource {
     action_set: xr::ActionSet,
+    physical_inputs: Vec<PhysicalInput>,
     pointers: [OpenXrPointer; 2],
     handsfree_pointer: OpenXrPointer,
 }
@@ -39,116 +43,196 @@ pub(super) struct OpenXrPointer {
     space: xr::Space,
 }
 
-pub struct MultiClickHandler<const COUNT: usize> {
-    name: String,
-    action_f32: xr::Action<f32>,
-    action_bool: xr::Action<bool>,
-    previous: [Instant; COUNT],
+pub(super) struct PhysicalInput {
+    profile_index: usize,
+    path: xr::Path,
+    action: PhysicalInputAction,
+}
+
+enum PhysicalInputAction {
+    Bool {
+        action: xr::Action<bool>,
+        current: Option<bool>,
+    },
+    Float {
+        action: xr::Action<f32>,
+        current: Option<f32>,
+    },
+}
+
+impl PhysicalInput {
+    fn update<G>(&mut self, session: &xr::Session<G>) -> anyhow::Result<()> {
+        match &mut self.action {
+            PhysicalInputAction::Bool { action, current } => {
+                let state = action.state(session, xr::Path::NULL)?;
+                *current = state.is_active.then_some(state.current_state);
+            }
+            PhysicalInputAction::Float { action, current } => {
+                let state = action.state(session, xr::Path::NULL)?;
+                *current = state.is_active.then_some(state.current_state);
+            }
+        }
+        Ok(())
+    }
+
+    fn pressed(&self, before: bool, threshold: [f32; 2]) -> bool {
+        match &self.action {
+            PhysicalInputAction::Bool { current, .. } => current.unwrap_or(false),
+            PhysicalInputAction::Float { current, .. } => {
+                let threshold = if before { threshold[0] } else { threshold[1] };
+                current.is_some_and(|value| value >= threshold - 0.001)
+            }
+        }
+    }
+}
+
+struct ButtonCondition {
+    input: usize,
+    threshold: [f32; 2],
+    active: bool,
+}
+
+impl ButtonCondition {
+    const fn new(input: usize, threshold: [f32; 2]) -> Self {
+        Self {
+            input,
+            threshold,
+            active: false,
+        }
+    }
+
+    fn update(&mut self, physical_inputs: &[PhysicalInput]) -> bool {
+        self.active = physical_inputs[self.input].pressed(self.active, self.threshold);
+        self.active
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClickCount {
+    Single,
+    Double,
+    Triple,
+}
+
+impl ClickCount {
+    const fn previous_clicks(self) -> usize {
+        match self {
+            Self::Single => 0,
+            Self::Double => 1,
+            Self::Triple => 2,
+        }
+    }
+
+    const fn timeout(self) -> Duration {
+        CLICK_TIMES[self.previous_clicks()]
+    }
+}
+
+struct MultiClickHandler {
+    count: ClickCount,
+    previous: [Option<Instant>; 2],
     held_active: bool,
     held_inactive: bool,
 }
 
-impl<const COUNT: usize> MultiClickHandler<COUNT> {
-    fn new(action_set: &xr::ActionSet, action_name: &str, side: &str) -> anyhow::Result<Self> {
-        let name = format!("{side}_{COUNT}-{action_name}");
-        let name_f32 = format!("{name}_value");
-
-        let action_bool = action_set.create_action::<bool>(&name, &name, &[])?;
-        let action_f32 = action_set.create_action::<f32>(&name_f32, &name_f32, &[])?;
-
-        Ok(Self {
-            name,
-            action_f32,
-            action_bool,
-            previous: from_fn(|_| Instant::now()),
+impl MultiClickHandler {
+    const fn new(count: ClickCount) -> Self {
+        Self {
+            count,
+            previous: [None, None],
             held_active: false,
             held_inactive: false,
-        })
-    }
-    fn check<G>(&mut self, session: &xr::Session<G>, threshold: f32) -> anyhow::Result<bool> {
-        let res = self.action_bool.state(session, xr::Path::NULL)?;
-        let mut state = res.is_active && res.current_state;
-
-        if !state {
-            let res = self.action_f32.state(session, xr::Path::NULL)?;
-            state = res.is_active && res.current_state >= threshold - 0.001;
         }
+    }
 
+    fn check(&mut self, state: bool) -> bool {
         if !state {
             self.held_active = false;
             self.held_inactive = false;
-            return Ok(false);
+            return false;
         }
 
         if self.held_active {
-            return Ok(true);
+            return true;
         }
 
         if self.held_inactive {
-            return Ok(false);
+            return false;
         }
 
-        let passed = self
-            .previous
-            .iter()
-            .all(|instant| instant.elapsed() < CLICK_TIMES[COUNT]);
+        let previous_clicks = self.count.previous_clicks();
+        if previous_clicks == 0 {
+            self.held_active = true;
+            return true;
+        }
+
+        let now = Instant::now();
+        let passed = self.previous[..previous_clicks].iter().all(|instant| {
+            instant.is_some_and(|instant| now.duration_since(instant) < self.count.timeout())
+        });
 
         if passed {
-            log::trace!("{}: passed", self.name);
             self.held_active = true;
-            self.held_inactive = false;
-
-            // reset to no prior clicks
-            let long_ago = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
-            self.previous
-                .iter_mut()
-                .for_each(|instant| *instant = long_ago);
-        } else if COUNT > 0 {
-            log::trace!("{}: rotate", self.name);
+            self.previous = [None, None];
+        } else {
             self.previous.rotate_right(1);
-            self.previous[0] = Instant::now();
+            self.previous[0] = Some(now);
             self.held_inactive = true;
         }
 
-        Ok(passed)
+        passed
     }
 }
 
-pub struct CustomClickAction {
-    single: MultiClickHandler<0>,
-    double: MultiClickHandler<1>,
-    triple: MultiClickHandler<2>,
-    threshold: [f32; 2],
+enum ButtonConditionSet {
+    Any(Vec<ButtonCondition>),
+    All(Vec<ButtonCondition>),
+}
+
+struct ButtonBinding {
+    conditions: ButtonConditionSet,
+    clicks: MultiClickHandler,
+}
+
+impl ButtonBinding {
+    fn state(&mut self, physical_inputs: &[PhysicalInput]) -> bool {
+        let active = match &mut self.conditions {
+            ButtonConditionSet::Any(conditions) => {
+                let mut active = false;
+                for condition in conditions {
+                    active |= condition.update(physical_inputs);
+                }
+                active
+            }
+            ButtonConditionSet::All(conditions) => {
+                let mut active = true;
+                for condition in conditions {
+                    active &= condition.update(physical_inputs);
+                }
+                active
+            }
+        };
+
+        self.clicks.check(active)
+    }
+}
+
+#[derive(Default)]
+struct CustomClickAction {
+    bindings: Vec<ButtonBinding>,
 }
 
 impl CustomClickAction {
-    pub fn new(action_set: &xr::ActionSet, name: &str, side: &str) -> anyhow::Result<Self> {
-        let single = MultiClickHandler::new(action_set, name, side)?;
-        let double = MultiClickHandler::new(action_set, name, side)?;
-        let triple = MultiClickHandler::new(action_set, name, side)?;
-
-        Ok(Self {
-            single,
-            double,
-            triple,
-            threshold: DEFAULT_BUTTON_THRESHOLDS,
-        })
+    fn add_binding(&mut self, binding: ButtonBinding) {
+        self.bindings.push(binding);
     }
 
-    pub const fn set_threshold(&mut self, threshold: [f32; 2]) {
-        self.threshold = threshold;
-    }
-
-    pub fn state(&mut self, before: bool, state: &XrState) -> anyhow::Result<bool> {
-        let threshold = if before {
-            self.threshold[0]
-        } else {
-            self.threshold[1]
-        };
-
-        Ok(self.single.check(&state.session, threshold)?
-            || self.double.check(&state.session, threshold)?
-            || self.triple.check(&state.session, threshold)?)
+    fn state(&mut self, physical_inputs: &[PhysicalInput]) -> bool {
+        let mut active = false;
+        for binding in &mut self.bindings {
+            active |= binding.state(physical_inputs);
+        }
+        active
     }
 }
 
@@ -180,14 +264,25 @@ impl OpenXrInputSource {
         let mut right_source = OpenXrHandSource::new(&mut action_set, "right")?;
         let mut fallback_source = OpenXrHandSource::new(&mut action_set, "handsfree")?;
 
+        let profiles = load_xr_input_profiles();
+        let (physical_inputs, physical_input_map) =
+            create_physical_inputs(&action_set, &xr.instance, &profiles)?;
+
         let mut hands: [&mut OpenXrHandSource; 3] =
             [&mut left_source, &mut right_source, &mut fallback_source];
-        suggest_bindings(&xr.instance, &mut hands);
+        suggest_bindings(
+            &xr.instance,
+            &mut hands,
+            &profiles,
+            &physical_inputs,
+            &physical_input_map,
+        );
 
         xr.session.attach_action_sets(&[&action_set])?;
 
         Ok(Self {
             action_set,
+            physical_inputs,
             pointers: [
                 OpenXrPointer::new(xr, left_source)?,
                 OpenXrPointer::new(xr, right_source)?,
@@ -213,6 +308,11 @@ impl OpenXrInputSource {
 
     pub fn update(&mut self, xr: &XrState, app: &mut AppState) -> anyhow::Result<()> {
         xr.session.sync_actions(&[(&self.action_set).into()])?;
+
+        for input in &mut self.physical_inputs {
+            input.update(&xr.session)?;
+        }
+        let physical_inputs = &self.physical_inputs;
 
         let loc = xr.view.locate(&xr.stage, xr.predicted_display_time)?;
         let hmd = posef_to_transform(&loc.pose);
@@ -242,7 +342,13 @@ impl OpenXrInputSource {
             let should_disable_lerp = app.input_state.should_disable_lerp();
             for i in 0..2 {
                 let pointer = &mut app.input_state.pointers[i];
-                self.pointers[i].update(pointer, xr, &app.session, !should_disable_lerp)?;
+                self.pointers[i].update(
+                    pointer,
+                    xr,
+                    &app.session,
+                    !should_disable_lerp,
+                    physical_inputs,
+                )?;
                 any_tracked |= pointer.tracked;
             }
         } else {
@@ -267,6 +373,7 @@ impl OpenXrInputSource {
                 hmd,
                 hmd_tracked,
                 &app.input_state.handsfree_state,
+                physical_inputs,
             )?;
 
             app.session.config.handsfree_pointer = old_handsfree;
@@ -373,6 +480,7 @@ impl OpenXrPointer {
         hmd: Affine3A,
         hmd_tracked: bool,
         handsfree_state: &PointerState,
+        physical_inputs: &[PhysicalInput],
     ) -> anyhow::Result<()> {
         match session.config.handsfree_pointer {
             HandsfreePointer::None => return Ok(()),
@@ -419,7 +527,7 @@ impl OpenXrPointer {
             return Ok(());
         }
 
-        self.pointer_load_actions(pointer, xr)?;
+        self.pointer_load_actions(pointer, xr, physical_inputs)?;
         pointer.now.click_modifier_right = handsfree_state.click_modifier_right;
         pointer.now.click_modifier_middle = handsfree_state.click_modifier_middle;
         pointer.now.scroll_y = handsfree_state.scroll_y;
@@ -433,6 +541,7 @@ impl OpenXrPointer {
         xr: &XrState,
         session: &AppSession,
         do_lerp: bool,
+        physical_inputs: &[PhysicalInput],
     ) -> anyhow::Result<()> {
         pointer.handsfree = false;
         self.pointer_load_pose(
@@ -444,7 +553,7 @@ impl OpenXrPointer {
                 None
             },
         )?;
-        self.pointer_load_actions(pointer, xr)?;
+        self.pointer_load_actions(pointer, xr, physical_inputs)?;
 
         Ok(())
     }
@@ -486,10 +595,15 @@ impl OpenXrPointer {
         Ok(())
     }
 
-    fn pointer_load_actions(&mut self, pointer: &mut Pointer, xr: &XrState) -> anyhow::Result<()> {
-        pointer.now.click = self.source.click.state(pointer.before.click, xr)?;
+    fn pointer_load_actions(
+        &mut self,
+        pointer: &mut Pointer,
+        xr: &XrState,
+        physical_inputs: &[PhysicalInput],
+    ) -> anyhow::Result<()> {
+        pointer.now.click = self.source.click.state(physical_inputs);
 
-        pointer.now.grab = self.source.grab.state(pointer.before.grab, xr)?;
+        pointer.now.grab = self.source.grab.state(physical_inputs);
 
         let scroll = self
             .source
@@ -500,50 +614,29 @@ impl OpenXrPointer {
         pointer.now.scroll_x = scroll.x;
         pointer.now.scroll_y = scroll.y;
 
-        pointer.now.alt_click = self.source.alt_click.state(pointer.before.alt_click, xr)?;
+        pointer.now.alt_click = self.source.alt_click.state(physical_inputs);
 
-        pointer.now.show_hide = self.source.show_hide.state(pointer.before.show_hide, xr)?;
+        pointer.now.show_hide = self.source.show_hide.state(physical_inputs);
 
-        pointer.now.click_modifier_right = self
-            .source
-            .modifier_right
-            .state(pointer.before.click_modifier_right, xr)?;
+        pointer.now.click_modifier_right = self.source.modifier_right.state(physical_inputs);
 
-        pointer.now.toggle_dashboard = self
-            .source
-            .toggle_dashboard
-            .state(pointer.before.toggle_dashboard, xr)?;
+        pointer.now.toggle_dashboard = self.source.toggle_dashboard.state(physical_inputs);
 
-        pointer.now.click_modifier_middle = self
-            .source
-            .modifier_middle
-            .state(pointer.before.click_modifier_middle, xr)?;
+        pointer.now.click_modifier_middle = self.source.modifier_middle.state(physical_inputs);
 
-        pointer.now.move_mouse = self
-            .source
-            .move_mouse
-            .state(pointer.before.move_mouse, xr)?;
+        pointer.now.move_mouse = self.source.move_mouse.state(physical_inputs);
 
-        pointer.now.space_drag = self
-            .source
-            .space_drag
-            .state(pointer.before.space_drag, xr)?;
+        pointer.now.space_drag = self.source.space_drag.state(physical_inputs);
 
-        pointer.now.space_rotate = self
-            .source
-            .space_rotate
-            .state(pointer.before.space_rotate, xr)?;
+        pointer.now.space_rotate = self.source.space_rotate.state(physical_inputs);
 
-        pointer.now.space_reset = self
-            .source
-            .space_reset
-            .state(pointer.before.space_reset, xr)?;
+        pointer.now.space_reset = self.source.space_reset.state(physical_inputs);
 
         Ok(())
     }
 }
 
-// supported action types: Haptic, Posef, Vector2f, f32, bool
+// supported direct action types: Haptic, Posef, Vector2f
 impl OpenXrHandSource {
     pub(super) fn new(action_set: &mut xr::ActionSet, side: &str) -> anyhow::Result<Self> {
         let action_pose = action_set.create_action::<xr::Posef>(
@@ -565,32 +658,30 @@ impl OpenXrHandSource {
 
         Ok(Self {
             pose: action_pose,
-            click: CustomClickAction::new(action_set, "click", side)?,
-            grab: CustomClickAction::new(action_set, "grab", side)?,
+            click: CustomClickAction::default(),
+            grab: CustomClickAction::default(),
             scroll: action_scroll,
-            alt_click: CustomClickAction::new(action_set, "alt_click", side)?,
-            show_hide: CustomClickAction::new(action_set, "show_hide", side)?,
-            toggle_dashboard: CustomClickAction::new(action_set, "toggle_dashboard", side)?,
-            space_drag: CustomClickAction::new(action_set, "space_drag", side)?,
-            space_rotate: CustomClickAction::new(action_set, "space_rotate", side)?,
-            space_reset: CustomClickAction::new(action_set, "space_reset", side)?,
-            modifier_right: CustomClickAction::new(action_set, "click_modifier_right", side)?,
-            modifier_middle: CustomClickAction::new(action_set, "click_modifier_middle", side)?,
-            move_mouse: CustomClickAction::new(action_set, "move_mouse", side)?,
+            alt_click: CustomClickAction::default(),
+            show_hide: CustomClickAction::default(),
+            toggle_dashboard: CustomClickAction::default(),
+            space_drag: CustomClickAction::default(),
+            space_rotate: CustomClickAction::default(),
+            space_reset: CustomClickAction::default(),
+            modifier_right: CustomClickAction::default(),
+            modifier_middle: CustomClickAction::default(),
+            move_mouse: CustomClickAction::default(),
             haptics: action_haptics,
         })
     }
 }
 
-fn to_paths(maybe_path_str: Option<&str>, instance: &xr::Instance) -> Option<xr::Path> {
-    maybe_path_str.and_then(|s| {
-        instance
-            .string_to_path(s)
-            .inspect_err(|_| {
-                log::warn!("Invalid binding path: {s}");
-            })
-            .ok()
-    })
+fn to_path(path_str: &str, instance: &xr::Instance) -> Option<xr::Path> {
+    instance
+        .string_to_path(path_str)
+        .inspect_err(|_| {
+            log::warn!("Invalid binding path: {path_str}");
+        })
+        .ok()
 }
 
 fn is_bool(path_str: &str) -> bool {
@@ -600,70 +691,225 @@ fn is_bool(path_str: &str) -> bool {
         .is_some_and(|last| matches!(last, "click" | "touch") || last.starts_with("dpad_"))
 }
 
-macro_rules! add_custom {
-    ($action:expr, $field:ident, $hands:expr, $bindings:expr, $instance:expr) => {
-        if let Some(action) = $action.as_ref() {
-            for i in 0..3 {
-                let spec = match i {
-                    0 => action.left.as_ref(),
-                    1 => action.right.as_ref(),
-                    2 => action.handsfree.as_ref(),
-                    _ => unreachable!(),
-                };
-
-                if let Some(spec) = spec {
-                    let iter: Box<dyn Iterator<Item = &String>> = match spec {
-                        OneOrMany::One(s) => Box::new(std::iter::once(s)),
-                        OneOrMany::Many(v) => Box::new(v.iter()),
-                    };
-
-                    for s in iter {
-                        if let Some(p) = to_paths(Some(s.as_str()), $instance) {
-                            if is_bool(s) {
-                                if action.triple_click.unwrap_or(false) {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.triple.action_bool,
-                                        p,
-                                    ));
-                                } else if action.double_click.unwrap_or(false) {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.double.action_bool,
-                                        p,
-                                    ));
-                                } else {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.single.action_bool,
-                                        p,
-                                    ));
-                                }
-                            } else {
-                                if action.triple_click.unwrap_or(false) {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.triple.action_f32,
-                                        p,
-                                    ));
-                                } else if action.double_click.unwrap_or(false) {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.double.action_f32,
-                                        p,
-                                    ));
-                                } else {
-                                    $bindings.push(xr::Binding::new(
-                                        &$hands[i].$field.single.action_f32,
-                                        p,
-                                    ));
-                                }
-                            }
-                        };
-                    }
-                };
-            }
-        }
+fn for_each_path(spec: Option<&OneOrMany<String>>, mut f: impl FnMut(&str)) {
+    let Some(spec) = spec else {
+        return;
     };
+
+    match spec {
+        OneOrMany::One(path) => f(path),
+        OneOrMany::Many(paths) => paths.iter().for_each(|path| f(path)),
+    }
 }
 
-// TODO: rename this bad func name
-macro_rules! add_custom_lr {
+fn button_actions(profile: &OpenXrInputProfile) -> [Option<&OpenXrInputAction>; 11] {
+    [
+        profile.click.as_ref(),
+        profile.alt_click.as_ref(),
+        profile.grab.as_ref(),
+        profile.show_hide.as_ref(),
+        profile.toggle_dashboard.as_ref(),
+        profile.space_drag.as_ref(),
+        profile.space_rotate.as_ref(),
+        profile.space_reset.as_ref(),
+        profile.click_modifier_right.as_ref(),
+        profile.click_modifier_middle.as_ref(),
+        profile.move_mouse.as_ref(),
+    ]
+}
+
+fn action_spec(action: &OpenXrInputAction, side: usize) -> Option<&OneOrMany<String>> {
+    match side {
+        0 => action.left.as_ref(),
+        1 => action.right.as_ref(),
+        2 => action.handsfree.as_ref(),
+        _ => unreachable!(),
+    }
+}
+
+fn action_chord(action: &OpenXrInputAction, side: usize) -> Option<&[OpenXrInputChordMember]> {
+    match side {
+        0 => action.left_chord.as_deref(),
+        1 => action.right_chord.as_deref(),
+        2 => None,
+        _ => unreachable!(),
+    }
+}
+
+fn action_threshold(action: &OpenXrInputAction, side: usize) -> [f32; 2] {
+    match side {
+        0 => action.threshold_left,
+        1 => action.threshold_right,
+        2 => None,
+        _ => unreachable!(),
+    }
+    .unwrap_or(DEFAULT_BUTTON_THRESHOLDS)
+}
+
+fn click_count(action: &OpenXrInputAction) -> ClickCount {
+    if action.triple_click.unwrap_or(false) {
+        ClickCount::Triple
+    } else if action.double_click.unwrap_or(false) {
+        ClickCount::Double
+    } else {
+        ClickCount::Single
+    }
+}
+
+type PhysicalInputMap = HashMap<(usize, String), usize>;
+
+fn create_physical_inputs(
+    action_set: &xr::ActionSet,
+    instance: &xr::Instance,
+    profiles: &[OpenXrInputProfile],
+) -> anyhow::Result<(Vec<PhysicalInput>, PhysicalInputMap)> {
+    let mut plans = Vec::<(usize, xr::Path, bool)>::new();
+    let mut map = PhysicalInputMap::new();
+
+    for (profile_index, profile) in profiles.iter().enumerate() {
+        if instance.string_to_path(&profile.profile).is_err() {
+            log::warn!("Invalid interaction profile path: {}", profile.profile);
+            continue;
+        }
+
+        let mut add_path = |path_str: &str| {
+            let key = (profile_index, path_str.to_owned());
+            if map.contains_key(&key) {
+                return;
+            }
+
+            let Some(path) = to_path(path_str, instance) else {
+                return;
+            };
+
+            let index = plans.len();
+            plans.push((profile_index, path, is_bool(path_str)));
+            map.insert(key, index);
+        };
+
+        for action in button_actions(profile).into_iter().flatten() {
+            for side in 0..3 {
+                for_each_path(action_spec(action, side), &mut add_path);
+            }
+
+            if let Some(chord) = action.left_chord.as_deref() {
+                for member in chord {
+                    add_path(member.path());
+                }
+            }
+            if let Some(chord) = action.right_chord.as_deref() {
+                for member in chord {
+                    add_path(member.path());
+                }
+            }
+        }
+    }
+
+    let mut physical_inputs = Vec::with_capacity(plans.len());
+    for (index, (profile_index, path, bool_input)) in plans.into_iter().enumerate() {
+        let name = format!("physical_input_{index}");
+        let display_name = format!("Physical input {index}");
+        let action = if bool_input {
+            PhysicalInputAction::Bool {
+                action: action_set.create_action::<bool>(&name, &display_name, &[])?,
+                current: None,
+            }
+        } else {
+            PhysicalInputAction::Float {
+                action: action_set.create_action::<f32>(&name, &display_name, &[])?,
+                current: None,
+            }
+        };
+
+        physical_inputs.push(PhysicalInput {
+            profile_index,
+            path,
+            action,
+        });
+    }
+
+    log::debug!(
+        "Created {} OpenXR physical button actions",
+        physical_inputs.len()
+    );
+
+    Ok((physical_inputs, map))
+}
+
+fn physical_input_index(map: &PhysicalInputMap, profile_index: usize, path: &str) -> Option<usize> {
+    map.get(&(profile_index, path.to_owned())).copied()
+}
+
+fn build_button_bindings(
+    action: &OpenXrInputAction,
+    side: usize,
+    profile_index: usize,
+    physical_input_map: &PhysicalInputMap,
+) -> Vec<ButtonBinding> {
+    let mut bindings = Vec::with_capacity(2);
+    let threshold = action_threshold(action, side);
+    let count = click_count(action);
+
+    let mut alternatives = Vec::new();
+    for_each_path(action_spec(action, side), |path| {
+        if let Some(input) = physical_input_index(physical_input_map, profile_index, path) {
+            alternatives.push(ButtonCondition::new(input, threshold));
+        }
+    });
+    if !alternatives.is_empty() {
+        bindings.push(ButtonBinding {
+            conditions: ButtonConditionSet::Any(alternatives),
+            clicks: MultiClickHandler::new(count),
+        });
+    }
+
+    if let Some(members) = action_chord(action, side).filter(|members| !members.is_empty()) {
+        let mut conditions = Vec::with_capacity(members.len());
+        let mut valid = true;
+        for member in members {
+            let Some(input) =
+                physical_input_index(physical_input_map, profile_index, member.path())
+            else {
+                // Never turn an invalid chord into a smaller, easier-to-trigger chord.
+                valid = false;
+                break;
+            };
+            conditions.push(ButtonCondition::new(
+                input,
+                member.threshold().unwrap_or(DEFAULT_BUTTON_THRESHOLDS),
+            ));
+        }
+
+        if valid {
+            bindings.push(ButtonBinding {
+                conditions: ButtonConditionSet::All(conditions),
+                clicks: MultiClickHandler::new(count),
+            });
+        }
+    }
+
+    bindings
+}
+
+fn add_button_bindings(
+    action: Option<&OpenXrInputAction>,
+    profile_index: usize,
+    hands: &mut [&mut OpenXrHandSource; 3],
+    physical_input_map: &PhysicalInputMap,
+    field: fn(&mut OpenXrHandSource) -> &mut CustomClickAction,
+) {
+    let Some(action) = action else {
+        return;
+    };
+
+    for (side, hand) in hands.iter_mut().enumerate() {
+        for binding in build_button_bindings(action, side, profile_index, physical_input_map) {
+            field(&mut **hand).add_binding(binding);
+        }
+    }
+}
+
+macro_rules! add_direct_bindings {
     ($action:expr, $field:ident, $hands:expr, $bindings:expr, $instance:expr) => {
         if let Some(action) = $action {
             for i in 0..3 {
@@ -674,41 +920,25 @@ macro_rules! add_custom_lr {
                     _ => unreachable!(),
                 };
 
-                if let Some(spec) = spec {
-                    let iter: Box<dyn Iterator<Item = &String>> = match spec {
-                        OneOrMany::One(s) => Box::new(std::iter::once(s)),
-                        OneOrMany::Many(v) => Box::new(v.iter()),
-                    };
-
-                    for s in iter {
-                        if let Some(p) = to_paths(Some(s.as_str()), $instance) {
-                            $bindings.push(xr::Binding::new(&$hands[i].$field, p));
-                        }
+                for_each_path(spec, |path_str| {
+                    if let Some(path) = to_path(path_str, $instance) {
+                        $bindings.push(xr::Binding::new(&$hands[i].$field, path));
                     }
-                };
-            }
-        };
-    };
-}
-
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-macro_rules! set_threshold_for {
-    ($hands:expr, $profile_action:expr, $field:ident) => {
-        if let Some(ref profile_action) = $profile_action {
-            if let Some(threshold) = profile_action.threshold_left {
-                $hands[0].$field.set_threshold(threshold);
-            }
-            if let Some(threshold) = profile_action.threshold_right {
-                $hands[1].$field.set_threshold(threshold);
+                });
             }
         }
     };
 }
 
-fn suggest_bindings(instance: &xr::Instance, hands: &mut [&mut OpenXrHandSource; 3]) {
-    let profiles = load_xr_input_profiles();
-
-    for profile in profiles {
+#[allow(clippy::too_many_lines)]
+fn suggest_bindings(
+    instance: &xr::Instance,
+    hands: &mut [&mut OpenXrHandSource; 3],
+    profiles: &[OpenXrInputProfile],
+    physical_inputs: &[PhysicalInput],
+    physical_input_map: &PhysicalInputMap,
+) {
+    for (profile_index, profile) in profiles.iter().enumerate() {
         log::debug!("Loading profile {}", profile.profile);
 
         let Ok(profile_path) = instance.string_to_path(&profile.profile) else {
@@ -716,82 +946,117 @@ fn suggest_bindings(instance: &xr::Instance, hands: &mut [&mut OpenXrHandSource;
             continue;
         };
 
+        // create out virtual buttons, then the xr::Binding's
+        add_button_bindings(
+            profile.click.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.click,
+        );
+        add_button_bindings(
+            profile.alt_click.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.alt_click,
+        );
+        add_button_bindings(
+            profile.grab.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.grab,
+        );
+        add_button_bindings(
+            profile.show_hide.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.show_hide,
+        );
+        add_button_bindings(
+            profile.toggle_dashboard.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.toggle_dashboard,
+        );
+        add_button_bindings(
+            profile.space_drag.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.space_drag,
+        );
+        add_button_bindings(
+            profile.space_rotate.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.space_rotate,
+        );
+        add_button_bindings(
+            profile.space_reset.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.space_reset,
+        );
+        add_button_bindings(
+            profile.click_modifier_right.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.modifier_right,
+        );
+        add_button_bindings(
+            profile.click_modifier_middle.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.modifier_middle,
+        );
+        add_button_bindings(
+            profile.move_mouse.as_ref(),
+            profile_index,
+            hands,
+            physical_input_map,
+            |hand| &mut hand.move_mouse,
+        );
+
+        let mut bindings: Vec<xr::Binding> = vec![];
+
+        add_direct_bindings!(profile.pose.as_ref(), pose, hands, bindings, instance);
+        add_direct_bindings!(profile.haptic.as_ref(), haptics, hands, bindings, instance);
+        add_direct_bindings!(profile.scroll.as_ref(), scroll, hands, bindings, instance);
+
+        // 1 physical source → 1 action per interaction profile
+        for input in physical_inputs
+            .iter()
+            .filter(|input| input.profile_index == profile_index)
         {
-            let mut bindings: Vec<xr::Binding> = vec![];
-
-            add_custom_lr!(profile.pose, pose, hands, bindings, instance);
-            add_custom_lr!(profile.haptic, haptics, hands, bindings, instance);
-            add_custom_lr!(profile.scroll, scroll, hands, bindings, instance);
-
-            add_custom!(profile.click, click, hands, bindings, instance);
-
-            add_custom!(profile.alt_click, alt_click, hands, bindings, instance);
-
-            add_custom!(profile.grab, grab, hands, bindings, instance);
-
-            add_custom!(profile.show_hide, show_hide, hands, bindings, instance);
-
-            add_custom!(
-                profile.toggle_dashboard,
-                toggle_dashboard,
-                hands,
-                bindings,
-                instance
-            );
-
-            add_custom!(profile.space_drag, space_drag, hands, bindings, instance);
-
-            add_custom!(
-                profile.space_rotate,
-                space_rotate,
-                hands,
-                bindings,
-                instance
-            );
-
-            add_custom!(profile.space_reset, space_reset, hands, bindings, instance);
-
-            add_custom!(
-                profile.click_modifier_right,
-                modifier_right,
-                hands,
-                bindings,
-                instance
-            );
-
-            add_custom!(
-                profile.click_modifier_middle,
-                modifier_middle,
-                hands,
-                bindings,
-                instance
-            );
-
-            add_custom!(profile.move_mouse, move_mouse, hands, bindings, instance);
-
-            if instance
-                .suggest_interaction_profile_bindings(profile_path, &bindings)
-                .is_err()
-            {
-                log::warn!("Could not apply bindings for {}", &profile.profile[22..]);
-            } else {
-                log::debug!(
-                    "Bindings for {} bound successfully.",
-                    &profile.profile[22..]
-                );
+            match &input.action {
+                PhysicalInputAction::Bool { action, .. } => {
+                    bindings.push(xr::Binding::new(action, input.path));
+                }
+                PhysicalInputAction::Float { action, .. } => {
+                    bindings.push(xr::Binding::new(action, input.path));
+                }
             }
         }
 
-        set_threshold_for!(hands, profile.click, click);
-        set_threshold_for!(hands, profile.alt_click, alt_click);
-        set_threshold_for!(hands, profile.grab, grab);
-        set_threshold_for!(hands, profile.show_hide, show_hide);
-        set_threshold_for!(hands, profile.toggle_dashboard, toggle_dashboard);
-        set_threshold_for!(hands, profile.space_drag, space_drag);
-        set_threshold_for!(hands, profile.space_rotate, space_rotate);
-        set_threshold_for!(hands, profile.space_reset, space_reset);
-        set_threshold_for!(hands, profile.click_modifier_right, modifier_right);
-        set_threshold_for!(hands, profile.click_modifier_middle, modifier_middle);
-        set_threshold_for!(hands, profile.move_mouse, move_mouse);
+        let profile_name = profile
+            .profile
+            .strip_prefix("/interaction_profiles/")
+            .unwrap_or(&profile.profile);
+        if instance
+            .suggest_interaction_profile_bindings(profile_path, &bindings)
+            .is_err()
+        {
+            log::warn!("Could not apply bindings for {profile_name}");
+        } else {
+            log::debug!("Bindings for {profile_name} bound successfully.");
+        }
     }
 }

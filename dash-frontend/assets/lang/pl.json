@@ -97,7 +97,10 @@
 			"RIGHT": "Prawy",
 			"COMPONENT": "Typ aktywacji",
 			"SUBPATH": "Aktywujący sterownik",
-			"THRESHOLD": "Aktywuj powyżej górnej wartości\nDeaktywuj poniżej dolnej wartości"
+			"THRESHOLD": "Aktywuj powyżej górnej wartości\nDeaktywuj poniżej dolnej wartości",
+			"CHORD": "Akord",
+			"CHORD_ADD_INPUT": "Dodaj wejście do akordu",
+			"CHORD_INPUT_HAND": "Ręka sterująca"
 		},
 		"BROWSE_ONLINE_CATALOG": "Przeglądaj katalog online...",
 		"BROWSE_SKYMAPS": "Przeglądaj skymapy",

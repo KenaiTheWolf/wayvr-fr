@@ -94,10 +94,13 @@
 				"SCROLL": "スクロール*"
 			},
 			"LEFT": "左手",
-			"RIGHT": "右",
+			"RIGHT": "右手",
 			"COMPONENT": "入力形式",
 			"SUBPATH": "操作ボタン",
-			"THRESHOLD": "上の値を超えると有効\n下の値を下回ると無効"
+			"THRESHOLD": "上の値を超えると有効\n下の値を下回ると無効",
+			"CHORD": "コード",
+			"CHORD_ADD_INPUT": "コード入力の追加",
+			"CHORD_INPUT_HAND": "入力側の手"
 		},
 		"BROWSE_ONLINE_CATALOG": "オンラインカタログを見る...",
 		"BROWSE_SKYMAPS": "スカイマップを選択",

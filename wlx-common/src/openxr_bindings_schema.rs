@@ -125,7 +125,11 @@ impl XrInputComponent {
 	pub fn is_analog(&self) -> bool {
 		matches!(
 			self,
-			XrInputComponent::Force | XrInputComponent::Value | XrInputComponent::X | XrInputComponent::Y
+			XrInputComponent::Force
+				| XrInputComponent::Value
+				| XrInputComponent::Proximity
+				| XrInputComponent::X
+				| XrInputComponent::Y
 		)
 	}
 }

@@ -32,6 +32,11 @@
 //
 // -- pose, haptic --
 // do not mess with these, unless you know what you're doing
+//
+// the side on left/right left_chord/right_chord affects actions like space drag, click and click modifiers;
+// which side of the controller to drag with, click with, apply the modifier to, etc.
+//
+// for side-agnostic actions like show-hide, the side doesn't matter
 
 [
   // Eye+hand interaction
@@ -200,18 +205,35 @@
     },
     alt_click: { },
     show_hide: {
-      right: "/user/hand/right/input/menu/click"
+      "left_chord": [
+        "/user/hand/left/input/view/click",
+        "/user/hand/left/input/bumper/click"
+      ]
+    },
+    toggle_dashboard: {
+      "left_chord": [
+        "/user/hand/right/input/menu/click",
+        "/user/hand/right/input/bumper/click"
+      ]
     },
     space_drag: {
-      left: "/user/hand/left/input/view/click"
+      "left_chord": [
+        "/user/hand/left/input/view/click",
+        "/user/hand/left/input/squeeze/value"
+      ]
     },
     space_rotate: {
-      left: "/user/hand/left/input/view/click",
-      double_click: true
+      "right_chord": [
+        "/user/hand/right/input/menu/click",
+        "/user/hand/right/input/squeeze/value"
+      ]
     },
     space_reset: {
-      left: "/user/hand/left/input/view/click",
-      triple_click: true
+      "right_chord": [
+        "/user/hand/right/input/menu/click",
+        "/user/hand/right/input/squeeze/value"
+      ],
+      "double_click": true
     },
     click_modifier_right: {
       left: "/user/hand/left/input/dpad_right/touch",

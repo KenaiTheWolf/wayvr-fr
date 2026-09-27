@@ -97,7 +97,10 @@
 			"RIGHT": "右侧",
 			"COMPONENT": "触发类型",
 			"SUBPATH": "激活控件",
-			"THRESHOLD": "高于上限值时激活\n低于下限值时取消激活"
+			"THRESHOLD": "高于上限值时激活\n低于下限值时取消激活",
+			"CHORD": "组合键",
+			"CHORD_ADD_INPUT": "添加组合键输入",
+			"CHORD_INPUT_HAND": "输入手"
 		},
 		"BROWSE_ONLINE_CATALOG": "浏览在线目录...",
 		"BROWSE_SKYMAPS": "浏览天空盒",

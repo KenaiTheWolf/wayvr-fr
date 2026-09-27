@@ -220,7 +220,7 @@ impl<T: 'static> Frontend<T> {
 		self.sounds_to_play.push(sound_type);
 	}
 
-	fn play_sound(&mut self, audio_system: &mut audio::AudioSystem, sound_type: SoundType) -> anyhow::Result<()> {
+	fn play_sound(&mut self, audio: &mut Box<dyn audio::AudioProvider>, sound_type: SoundType) -> anyhow::Result<()> {
 		let mut assets = self.globals.assets_builtin();
 
 		let path = match sound_type {
@@ -236,7 +236,7 @@ impl<T: 'static> Frontend<T> {
 		};
 
 		let sample = audio::AudioSample::from_mp3(&sound_bytes)?;
-		audio_system.play_sample(&sample);
+		audio.play_raw_sample(&sample);
 		Ok(())
 	}
 
@@ -264,14 +264,13 @@ impl<T: 'static> Frontend<T> {
 	pub fn process_update(
 		&mut self,
 		res: FrontendUpdateResult,
-		audio_system: &mut audio::AudioSystem,
-		audio_sample_player: &mut audio::SamplePlayer,
+		audio: &mut Box<dyn audio::AudioProvider>,
 	) -> anyhow::Result<()> {
 		for sound_type in res.sounds_to_play {
-			self.play_sound(audio_system, sound_type)?;
+			self.play_sound(audio, sound_type)?;
 		}
 
-		audio_sample_player.play_wgui_samples(audio_system, res.layout_result.sounds_to_play);
+		audio.play_wgui_samples(res.layout_result.sounds_to_play);
 
 		Ok(())
 	}

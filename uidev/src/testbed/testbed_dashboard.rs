@@ -41,9 +41,7 @@ impl Testbed for TestbedDashboard {
 			height: params.height,
 			timestep_alpha: params.timestep_alpha,
 		})?;
-		self
-			.frontend
-			.process_update(res, params.audio_system, params.audio_sample_player)?;
+		self.frontend.process_update(res, params.audio)?;
 
 		while self.executor.try_tick() {}
 		Ok(())

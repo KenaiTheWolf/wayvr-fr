@@ -57,7 +57,7 @@ use wayvr_ipc::packet_client::PositionMode;
 use wgui::{gfx::WGfx, globals::WguiGlobals, log::LogErr};
 use wlx_capture::frame::Transform;
 use wlx_common::{
-    audio::{AudioSystem, SamplePlayer},
+    audio,
     config::{DefaultPositioning, GeneralConfig, InputCaptureMethod},
     desktop_finder::DesktopFinder,
 };
@@ -652,8 +652,7 @@ impl WvrServerState {
             &mut app.input_state,
             &mut app.tasks,
             &mut app.hid_provider,
-            &mut app.audio_sample_player,
-            &mut app.audio_system,
+            &mut app.audio,
             &app.wgui_globals,
             &app.session.config,
         );
@@ -774,8 +773,7 @@ impl WvrServerState {
         input_state: &mut InputState,
         tasks: &mut TaskContainer,
         hid_wrapper: &mut HidWrapper,
-        audio_sample_player: &mut SamplePlayer,
-        audio_system: &mut AudioSystem,
+        audio: &mut Box<dyn audio::AudioProvider>,
         globals: &WguiGlobals,
         config: &GeneralConfig,
     ) {
@@ -924,7 +922,7 @@ impl WvrServerState {
                     }
                 }
                 input_capture::CapturedEvent::Grabbed => {
-                    audio_sample_player.play_sample(audio_system, "input_grab");
+                    audio.play_sample("input_grab");
                     if !self.grab_toast_sent {
                         self.grab_toast_sent = true;
                         let text = &globals.i18n().translate("NOTIFICATION.WE_ARE_GRABBING");
@@ -937,7 +935,7 @@ impl WvrServerState {
                     self.manager.release_all_keys();
                     self.has_input_focus = false;
                     self.wm.keyboard_focus = None;
-                    audio_sample_player.play_sample(audio_system, "input_ungrab");
+                    audio.play_sample("input_ungrab");
                 }
                 input_capture::CapturedEvent::KeyCombo { combo, pressed } => match combo {
                     input_capture::KeyCombo::CloseApp if pressed => {

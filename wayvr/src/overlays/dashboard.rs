@@ -120,8 +120,7 @@ impl DashFrontend {
             height: DASH_RES_VEC2.y / GUI_SCALE,
             timestep_alpha,
         })?;
-        self.inner
-            .process_update(res, &mut app.audio_system, &mut app.audio_sample_player)?;
+        self.inner.process_update(res, &mut app.audio)?;
         Ok(())
     }
 

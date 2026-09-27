@@ -37,4 +37,5 @@ pub enum BackendError {
 pub struct RunParams {
     pub wgui_globals: WguiGlobals,
     pub config: GeneralConfig,
+    pub no_audio: bool,
 }

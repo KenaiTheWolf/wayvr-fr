@@ -9,15 +9,12 @@ pub struct TestbedUpdateParams<'a> {
 	pub width: f32,
 	pub height: f32,
 	pub timestep_alpha: f32,
-	pub audio_system: &'a mut audio::AudioSystem,
-	pub audio_sample_player: &'a mut audio::SamplePlayer,
+	pub audio: &'a mut Box<dyn audio::AudioProvider>,
 }
 
 impl<'a> TestbedUpdateParams<'a> {
 	pub fn process_layout_result(&mut self, res: LayoutUpdateResult) {
-		self
-			.audio_sample_player
-			.play_wgui_samples(self.audio_system, res.sounds_to_play);
+		self.audio.play_wgui_samples(res.sounds_to_play);
 	}
 }
 

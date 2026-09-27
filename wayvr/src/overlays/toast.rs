@@ -139,8 +139,7 @@ impl BakedToast {
         let destroy_at = instant.add(std::time::Duration::from_secs_f32(self.params.timeout));
 
         if self.params.sound && app.session.config.notifications_sound_enabled {
-            app.audio_sample_player
-                .play_sample(&mut app.audio_system, "toast");
+            app.audio.play_sample("toast");
         }
 
         // drop any toast that was created before us.

@@ -630,8 +630,7 @@ pub(super) fn setup_custom_button<S: 'static>(
                         .submit_at(app, now + Duration::from_secs(i as _));
                     }
 
-                    app.audio_sample_player
-                        .play_sample(&mut app.audio_system, "fix_floor");
+                    app.audio.play_sample("fix_floor");
 
                     let deadline = now + Duration::from_secs(duration_secs);
 

@@ -48,8 +48,7 @@ pub struct AppState {
     pub gfx_extras: WGfxExtras,
     pub hid_provider: HidWrapper,
 
-    pub audio_system: audio::AudioSystem,
-    pub audio_sample_player: audio::SamplePlayer,
+    pub audio: Box<dyn audio::AudioProvider>,
 
     pub notifications: NotificationManager,
 
@@ -122,8 +121,13 @@ impl AppState {
 
         let wgui_shared = WSharedContext::new(gfx.clone())?;
 
-        let mut audio_sample_player = audio::SamplePlayer::new();
-        audio_sample_player.register_sample(
+        let mut audio: Box<dyn audio::AudioProvider> = if params.no_audio {
+            Box::new(audio::DummyAudioProvider::new())
+        } else {
+            Box::new(audio::RealAudioProvider::new())
+        };
+
+        audio.register_sample(
             "key_click",
             audio::AudioSample::from_mp3(&audio::AudioSample::bytes_from_config_or_default(
                 "sound/key_click.mp3",
@@ -131,7 +135,7 @@ impl AppState {
             ))?,
         )?;
 
-        audio_sample_player.register_sample(
+        audio.register_sample(
             "toast",
             audio::AudioSample::from_mp3(&audio::AudioSample::bytes_from_config_or_default(
                 "sound/toast.mp3",
@@ -139,7 +143,7 @@ impl AppState {
             ))?,
         )?;
 
-        audio_sample_player.register_sample(
+        audio.register_sample(
             "fix_floor",
             audio::AudioSample::from_mp3(&audio::AudioSample::bytes_from_config_or_default(
                 "sound/fix_floor.mp3",
@@ -147,7 +151,7 @@ impl AppState {
             ))?,
         )?;
 
-        audio_sample_player.register_sample(
+        audio.register_sample(
             "input_grab",
             audio::AudioSample::from_mp3(&audio::AudioSample::bytes_from_config_or_default(
                 "sound/wvr_input_capture_grabbed.mp3",
@@ -155,7 +159,7 @@ impl AppState {
             ))?,
         )?;
 
-        audio_sample_player.register_sample(
+        audio.register_sample(
             "input_ungrab",
             audio::AudioSample::from_mp3(&audio::AudioSample::bytes_from_config_or_default(
                 "sound/wvr_input_capture_ungrabbed.mp3",
@@ -163,7 +167,7 @@ impl AppState {
             ))?,
         )?;
 
-        audio_sample_player.register_wgui_samples(params.wgui_globals.assets_builtin().as_mut())?;
+        audio.register_wgui_samples(params.wgui_globals.assets_builtin().as_mut())?;
 
         let mut theme = WguiTheme {
             animation_mult: 1. / session.config.ui_animation_speed,
@@ -198,8 +202,7 @@ impl AppState {
             gfx,
             gfx_extras,
             hid_provider,
-            audio_system: audio::AudioSystem::new(),
-            audio_sample_player,
+            audio,
             wgui_shared,
             input_state: InputState::new(),
             screens: smallvec![],

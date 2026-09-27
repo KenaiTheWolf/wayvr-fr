@@ -59,9 +59,9 @@ fn init_logging() {
 		.init();
 }
 
-fn load_testbed(audio_sample_player: &mut audio::SamplePlayer) -> anyhow::Result<Box<dyn Testbed>> {
+fn load_testbed(audio: &mut Box<dyn audio::AudioProvider>) -> anyhow::Result<Box<dyn Testbed>> {
 	let mut assets = Box::new(assets::Asset {});
-	audio_sample_player.register_wgui_samples(assets.as_mut())?;
+	audio.register_wgui_samples(assets.as_mut())?;
 
 	let name = std::env::var("TESTBED").unwrap_or_default();
 	Ok(match name.as_str() {
@@ -106,9 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let mut scale = window.scale_factor() as f32;
 
-	let mut audio_system = audio::AudioSystem::new();
-	let mut audio_sample_player = audio::SamplePlayer::new();
-	let mut testbed = load_testbed(&mut audio_sample_player)?;
+	let mut audio: Box<dyn audio::AudioProvider> = Box::new(audio::RealAudioProvider::new());
+	let mut testbed = load_testbed(&mut audio)?;
 
 	let mut mouse = Vec2::ZERO;
 
@@ -314,8 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						width: (swapchain_size[0] as f32 / scale) as _,
 						height: (swapchain_size[1] as f32 / scale) as _,
 						timestep_alpha: timestep.alpha,
-						audio_system: &mut audio_system,
-						audio_sample_player: &mut audio_sample_player,
+						audio: &mut audio,
 					})
 					.unwrap();
 

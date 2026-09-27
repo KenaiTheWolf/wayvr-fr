@@ -109,6 +109,10 @@ struct Args {
     /// Path to write logs to
     #[arg(short, long, value_name = "FILE_PATH")]
     log_to: Option<String>,
+
+    /// Disable audio output
+    #[arg(long)]
+    no_audio: bool,
 }
 
 fn load_config() -> GeneralConfig {
@@ -117,7 +121,7 @@ fn load_config() -> GeneralConfig {
     load_general_config()
 }
 
-fn init_run_params() -> backend::RunParams {
+fn init_run_params(no_audio: bool) -> backend::RunParams {
     let assets = Box::new(gui::asset::GuiAsset {});
     let config = load_config();
     let lang_provider = WayVRLangProvider::from_config(&config);
@@ -135,6 +139,7 @@ fn init_run_params() -> backend::RunParams {
     backend::RunParams {
         wgui_globals,
         config,
+        no_audio,
     }
 }
 
@@ -204,7 +209,7 @@ fn auto_run(args: Args, used_backend: &mut Option<XrBackend>) {
         if !args_get_openvr(&args) {
             use crate::backend::{BackendError, openxr::openxr_run};
             tried_xr = true;
-            match openxr_run(&args, init_run_params()) {
+            match openxr_run(&args, init_run_params(args.no_audio)) {
                 Ok(()) => {
                     used_backend.replace(XrBackend::OpenXR);
                     return;
@@ -222,7 +227,7 @@ fn auto_run(args: Args, used_backend: &mut Option<XrBackend>) {
         if !args_get_openxr(&args) {
             use crate::backend::{BackendError, openvr::openvr_run};
             tried_vr = true;
-            match openvr_run(&args, init_run_params()) {
+            match openvr_run(&args, init_run_params(args.no_audio)) {
                 Ok(()) => {
                     used_backend.replace(XrBackend::OpenVR);
                     return;
@@ -259,7 +264,7 @@ fn auto_run(args: Args, used_backend: &mut Option<XrBackend>) {
         _ => "NOTIFICATION.INVALID_ARGS",
     };
 
-    let run_params = init_run_params();
+    let run_params = init_run_params(args.no_audio);
 
     let instructions_str = run_params.wgui_globals.i18n().translate(instructions_key);
 

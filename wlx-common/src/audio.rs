@@ -154,6 +154,86 @@ impl Default for AudioSystem {
 	}
 }
 
+pub trait AudioProvider {
+	fn register_sample(&mut self, sample_name: &str, sample: AudioSample) -> anyhow::Result<()>;
+	fn register_wgui_samples(&mut self, assets: &mut dyn AssetProvider) -> anyhow::Result<()>;
+	fn play_sample(&mut self, sample_name: &str);
+	fn play_raw_sample(&mut self, sample: &AudioSample);
+	fn play_wgui_samples(&mut self, samples: Vec<WguiSoundType>);
+}
+
+pub struct RealAudioProvider {
+	system: AudioSystem,
+	player: SamplePlayer,
+}
+
+impl RealAudioProvider {
+	pub fn new() -> Self {
+		Self {
+			system: AudioSystem::new(),
+			player: SamplePlayer::new(),
+		}
+	}
+}
+
+impl Default for RealAudioProvider {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl AudioProvider for RealAudioProvider {
+	fn register_sample(&mut self, sample_name: &str, sample: AudioSample) -> anyhow::Result<()> {
+		self.player.register_sample(sample_name, sample)
+	}
+
+	fn register_wgui_samples(&mut self, assets: &mut dyn AssetProvider) -> anyhow::Result<()> {
+		self.player.register_wgui_samples(assets)
+	}
+
+	fn play_sample(&mut self, sample_name: &str) {
+		self.player.play_sample(&mut self.system, sample_name)
+	}
+
+	fn play_raw_sample(&mut self, sample: &AudioSample) {
+		self.system.play_sample(sample);
+	}
+
+	fn play_wgui_samples(&mut self, samples: Vec<WguiSoundType>) {
+		self.player.play_wgui_samples(&mut self.system, samples)
+	}
+}
+
+pub struct DummyAudioProvider {}
+
+impl DummyAudioProvider {
+	pub fn new() -> Self {
+		Self {}
+	}
+}
+
+impl Default for DummyAudioProvider {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl AudioProvider for DummyAudioProvider {
+	fn register_sample(&mut self, _sample_name: &str, _sample: AudioSample) -> anyhow::Result<()> {
+		Ok(())
+	}
+
+	fn register_wgui_samples(&mut self, _assets: &mut dyn AssetProvider) -> anyhow::Result<()> {
+		Ok(())
+	}
+
+	fn play_sample(&mut self, _sample_name: &str) {}
+
+	fn play_raw_sample(&mut self, _sample: &AudioSample) {}
+
+	fn play_wgui_samples(&mut self, _samples: Vec<WguiSoundType>) {}
+}
+
 impl AudioSample {
 	pub fn from_mp3(encoded_bin: &[u8]) -> anyhow::Result<Self> {
 		// SAFETY: this is safe

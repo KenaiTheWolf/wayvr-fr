@@ -4,9 +4,11 @@ set -eu
 case "$(uname -m)" in
   x86_64|amd64)
     APPIMAGE_ARCH=x86_64
+    DESKTOP_FILE=wayvr-amd64.desktop
     ;;
   aarch64|arm64)
     APPIMAGE_ARCH=aarch64
+    DESKTOP_FILE=wayvr-aarch64.desktop
     ;;
   *)
     echo "Unsupported architecture: $(uname -m)" >&2
@@ -21,7 +23,7 @@ export VERSION
 echo "Packaging AppImage for ${APPIMAGE_ARCH}"
 
 "./${LINUXDEPLOY}" \
-  -dwayvr.desktop \
+  -d"${DESKTOP_FILE}" \
   -iwayvr.png \
   --appdir="${APPDIR}" \
   --output appimage \

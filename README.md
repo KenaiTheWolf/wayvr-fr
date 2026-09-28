@@ -30,6 +30,18 @@ There are multiple ways to install WayVR:
 1. [Homebrew-XR](https://tangled.org/matrixfurry.com/homebrew-xr) package (for Bazzite, etc.): [wayvr](https://tangled.org/matrixfurry.com/homebrew-xr/#installing-applications)
 1. [Docs: Building from source](https://wayvr.org/docs/basics/building-from-source/).
 
+## Installing on Steam Frame
+
+Steam Frame support is experimental. Please report issues.
+
+It's possible to install and run WayVR on the Steam Frame in headless mode. You will not have access to your KDE desktop, but you will be able to run applications in 3D space around you.
+
+Steps to install on Steam Frame:
+1. Grab the latest aarch64 AppImage
+  - For nightly AppImages go [here](https://github.com/wayvr-org/wayvr/actions/workflows/build-appimage.yml) and select the topmost list item a ✅️. The downloads will be on the bottom of the page (GitHub login required).
+1. Install the AppImage using GearLever
+1. Start WayVR from the taskbar (same place where you'd start Destkop)
+
 ### General Setup
 
 1. Start Monado, WiVRn or SteamVR.

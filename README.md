@@ -61,6 +61,7 @@ Steps to install on Steam Frame:
   - For nightly AppImages go [here](https://github.com/wayvr-org/wayvr/actions/workflows/build-appimage.yml) and select the topmost list item a ✅️
   - The downloads will be on the bottom of the page (GitHub login required).
 1. Install the AppImage using GearLever
+1. (Recommended) In Frame's SteamVR settings, set overlay quality to High.
 1. Start WayVR from the taskbar (same place where you'd start Destkop)
 
 ## First Start

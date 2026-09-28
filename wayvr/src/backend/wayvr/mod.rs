@@ -171,7 +171,7 @@ pub enum TickTask {
     NewExternalProcess(ExternalProcessRequest), // Call WayVRCompositor::add_client after receiving this message
 }
 
-const KEY_REPEAT_DELAY: i32 = 200;
+const KEY_REPEAT_DELAY: i32 = 500;
 const KEY_REPEAT_RATE: i32 = 50;
 const WAYVR_SCREEN_RES: [i32; 2] = [2560, 1440];
 

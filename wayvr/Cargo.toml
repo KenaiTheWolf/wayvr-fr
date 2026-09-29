@@ -83,7 +83,7 @@ mint = "0.5.9"
 openxr = { version = "0.21.1", features = ["linked", "mint"], optional = true }
 ovr_overlay = {
   git = "https://github.com/galister/ovr_overlay_oyasumi",
-  rev = "e477bd2a9e04293ea68c1e7529ef2cb131f32acc",
+  rev = "3b7d24cee24aa2b1ad7dffc5d5c8568508049bdd",
   features = [
     "ovr_input",
     "ovr_system",

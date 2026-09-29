@@ -66,6 +66,11 @@
       "requirement": "optional"
     },
     {
+      "name": "/actions/default/in/EyeTracking",
+      "type": "eyetracking",
+      "requirement": "optional"
+    },
+    {
       "name": "/actions/default/out/HapticsLeft",
       "type": "vibration"
     },

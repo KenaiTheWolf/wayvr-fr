@@ -23,6 +23,7 @@ use super::helpers::{Affine3AConvert, OVRError};
 
 const SET_DEFAULT: &str = "/actions/default";
 const INPUT_SOURCES: [&str; 2] = ["/user/hand/left", "/user/hand/right"];
+const INPUT_HEAD: &str = "/user/head";
 const PATH_POSES: [&str; 2] = [
     "/actions/default/in/LeftHand",
     "/actions/default/in/RightHand",
@@ -33,6 +34,7 @@ const PATH_HAPTICS: [&str; 2] = [
 ];
 
 const PATH_ALT_CLICK: &str = "/actions/default/in/AltClick";
+const PATH_EYE_TRACKING: &str = "/actions/default/in/EyeTracking";
 const PATH_CLICK_MODIFIER_MIDDLE: &str = "/actions/default/in/ClickModifierMiddle";
 const PATH_CLICK_MODIFIER_RIGHT: &str = "/actions/default/in/ClickModifierRight";
 const PATH_CLICK: &str = "/actions/default/in/Click";
@@ -49,7 +51,9 @@ const INPUT_ANY: InputValueHandle = InputValueHandle(ovr_overlay::sys::k_ulInval
 
 pub(super) struct OpenVrInputSource {
     hands: [OpenVrHandSource; 2],
+    head_hnd: InputValueHandle,
     set_hnd: ActionSetHandle,
+    eye_tracking_hnd: ActionHandle,
     click_hnd: ActionHandle,
     grab_hnd: ActionHandle,
     scroll_hnd: ActionHandle,
@@ -75,7 +79,9 @@ pub(super) struct OpenVrHandSource {
 impl OpenVrInputSource {
     pub fn new(input: &mut InputManager) -> Result<Self, OVRError> {
         let set_hnd = input.get_action_set_handle(SET_DEFAULT)?;
+        let head_hnd = input.get_input_source_handle(INPUT_HEAD)?;
 
+        let eye_tracking_hnd = input.get_action_handle(PATH_EYE_TRACKING)?;
         let click_hnd = input.get_action_handle(PATH_CLICK)?;
         let grab_hnd = input.get_action_handle(PATH_GRAB)?;
         let scroll_hnd = input.get_action_handle(PATH_SCROLL)?;
@@ -114,7 +120,9 @@ impl OpenVrInputSource {
 
         Ok(Self {
             hands,
+            head_hnd,
             set_hnd,
+            eye_tracking_hnd,
             click_hnd,
             grab_hnd,
             scroll_hnd,
@@ -183,7 +191,21 @@ impl OpenVrInputSource {
             },
         });
 
-        let _ = input.update_actions(&mut [aas_left, aas_right]);
+        let aas_head = ActiveActionSet(ovr_overlay::sys::VRActiveActionSet_t {
+            ulActionSet: self.set_hnd.0,
+            ulRestrictedToDevice: self.head_hnd.0,
+            ulSecondaryActionSet: 0,
+            unPadding: 0,
+            nPriority: 0x0,
+        });
+
+        let _ = input.update_actions(&mut [aas_left, aas_right, aas_head]);
+
+        let eye_gaze = input
+            .get_eye_tracking_data_relative_to_now(self.eye_tracking_hnd, universe.clone(), 0.005)
+            .ok()
+            .and_then(|data| eye_tracking_pose(&data.0));
+        app.input_state.eye_gaze = eye_gaze;
 
         let devices = system.get_device_to_absolute_tracking_pose(universe.clone(), 0.005);
         let hmd = devices[0].mDeviceToAbsoluteTracking.to_affine();
@@ -304,6 +326,7 @@ impl OpenVrInputSource {
                 mode,
                 hmd,
                 hmd_tracked,
+                eye_gaze,
                 handsfree_state,
                 delta_time,
                 pointer_lerp_factor,
@@ -316,39 +339,40 @@ impl OpenVrInputSource {
         mode: HandsfreePointer,
         hmd: Affine3A,
         hmd_tracked: bool,
+        eye_gaze: Option<Affine3A>,
         handsfree_state: PointerState,
         delta_time: f32,
         pointer_lerp_factor: f32,
     ) {
-        if !matches!(mode, HandsfreePointer::Hmd | HandsfreePointer::HmdOnly) {
-            return;
-        }
+        let (raw_pose, tracked, lerp_scale) = match mode {
+            HandsfreePointer::None => return,
+            HandsfreePointer::Hmd | HandsfreePointer::HmdOnly => (hmd, hmd_tracked, 1.0),
+            HandsfreePointer::EyeTracking | HandsfreePointer::EyeTrackingOnly => {
+                let Some(gaze) = eye_gaze else {
+                    pointer.tracked = false;
+                    pointer.handsfree = false;
+                    pointer.now = handsfree_pointer_state(handsfree_state);
+                    return;
+                };
+                // Match the OpenXR backend's stronger smoothing for eye gaze.
+                (gaze, true, 0.5)
+            }
+        };
 
         let cur_quat = Quat::from_affine3(&pointer.pose);
         let cur_pos = Vec3::from(pointer.pose.translation);
-        let new_quat = Quat::from_affine3(&hmd);
-        let new_pos = Vec3::from(hmd.translation);
-        let lerp_factor = (delta_time * 100.0 * pointer_lerp_factor).clamp(0.1, 1.0);
+        let new_quat = Quat::from_affine3(&raw_pose);
+        let new_pos = Vec3::from(raw_pose.translation);
+        let lerp_factor = (delta_time * 100.0 * pointer_lerp_factor * lerp_scale).clamp(0.1, 1.0);
 
-        pointer.raw_pose = hmd;
+        pointer.raw_pose = raw_pose;
         pointer.pose = Affine3A::from_rotation_translation(
             cur_quat.lerp(new_quat, lerp_factor),
             cur_pos.lerp(new_pos, lerp_factor),
         );
-        pointer.tracked = hmd_tracked;
-        pointer.handsfree = hmd_tracked;
-
-        // OpenVR has no pinch action source :(
-        pointer.now = PointerState {
-            click: handsfree_state.click,
-            grab: handsfree_state.grab,
-            grab_float: handsfree_state.grab_float,
-            click_modifier_right: handsfree_state.click_modifier_right,
-            click_modifier_middle: handsfree_state.click_modifier_middle,
-            scroll_x: handsfree_state.scroll_x,
-            scroll_y: handsfree_state.scroll_y,
-            ..PointerState::default()
-        };
+        pointer.tracked = tracked;
+        pointer.handsfree = tracked;
+        pointer.now = handsfree_pointer_state(handsfree_state);
     }
 
     pub fn update_devices(&mut self, system: &mut SystemManager, app: &mut AppState) -> bool {
@@ -398,6 +422,49 @@ impl OpenVrInputSource {
 
         old_len != app.input_state.devices.len()
     }
+}
+
+fn handsfree_pointer_state(state: PointerState) -> PointerState {
+    PointerState {
+        click: state.click,
+        grab: state.grab,
+        grab_float: state.grab_float,
+        click_modifier_right: state.click_modifier_right,
+        click_modifier_middle: state.click_modifier_middle,
+        scroll_x: state.scroll_x,
+        scroll_y: state.scroll_y,
+        ..PointerState::default()
+    }
+}
+
+fn eye_tracking_pose(data: &ovr_overlay::sys::VREyeTrackingData_t) -> Option<Affine3A> {
+    if !(data.bActive && data.bValid && data.bTracked) {
+        return None;
+    }
+
+    let origin = Vec3::new(
+        data.vGazeOrigin.v[0],
+        data.vGazeOrigin.v[1],
+        data.vGazeOrigin.v[2],
+    );
+    let target = Vec3::new(
+        data.vGazeTarget.v[0],
+        data.vGazeTarget.v[1],
+        data.vGazeTarget.v[2],
+    );
+    if !origin.is_finite() || !target.is_finite() {
+        return None;
+    }
+
+    let direction = target - origin;
+    if !direction.is_finite() || direction.length_squared() <= f32::EPSILON {
+        return None;
+    }
+
+    Some(Affine3A::from_rotation_translation(
+        Quat::from_rotation_arc(Vec3::NEG_Z, direction.normalize()),
+        origin,
+    ))
 }
 
 fn get_tracked_device(

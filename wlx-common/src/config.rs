@@ -121,7 +121,7 @@ pub enum HandsfreePointer {
 	HmdOnly,
 	#[strum(props(Translation = "APP_SETTINGS.OPTION.EYE_PINCH", Backend = "OpenXR"))]
 	EyeTracking,
-	#[strum(props(Translation = "APP_SETTINGS.OPTION.EYE_ONLY", Backend = "OpenXR"))]
+	#[strum(props(Translation = "APP_SETTINGS.OPTION.EYE_ONLY"))]
 	EyeTrackingOnly,
 }
 
@@ -130,7 +130,7 @@ pub enum HandsfreeAltTab {
 	#[strum(props(Translation = "APP_SETTINGS.OPTION.HMD_ONLY"))]
 	#[default]
 	Hmd,
-	#[strum(props(Translation = "APP_SETTINGS.OPTION.EYE_ONLY", Backend = "OpenXR"))]
+	#[strum(props(Translation = "APP_SETTINGS.OPTION.EYE_ONLY"))]
 	EyeTracking,
 }
 

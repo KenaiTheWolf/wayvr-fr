@@ -1,4 +1,5 @@
 use anyhow::Context;
+use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::{BufferType, buffer_type};
 use smithay::desktop::{
@@ -42,7 +43,7 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
-use smithay::wayland::shm::{ShmHandler, ShmState, with_buffer_contents};
+use smithay::wayland::shm::{ShmHandler, ShmState, shm_format_to_fourcc, with_buffer_contents};
 use smithay::wayland::single_pixel_buffer::get_single_pixel_buffer;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::{
@@ -59,6 +60,7 @@ use std::sync::{Arc, Mutex};
 use wayland_server::Client;
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_surface::WlSurface;
+use wlx_capture::DrmFourcc;
 
 use crate::backend::wayvr::image_importer::ImageImporter;
 use crate::backend::wayvr::{SurfaceBufWithImage, WAYVR_SCREEN_RES, time};
@@ -90,6 +92,7 @@ pub struct Application {
     pub viewporter: ViewporterState,
     pub display_handle: DisplayHandle,
     pub redraw_requests: HashSet<ObjectId>,
+    pub(super) no_server_decorations: HashSet<ObjectId>,
     pub pending_frame_callbacks: HashMap<ObjectId, Vec<wl_callback::WlCallback>>,
     pub cursor_image: CursorImageStatus,
     /// pointer that last drove the wvr_server mouse. used for DND
@@ -179,6 +182,23 @@ impl Application {
         self.redraw_requests.remove(surface_id)
     }
 
+    pub fn has_server_side_decorations(&self, surface: &WlSurface) -> bool {
+        !self.no_server_decorations.contains(&surface.id())
+    }
+
+    fn set_server_side_decorations(&mut self, surface: &WlSurface, enabled: bool) {
+        let id = surface.id();
+        let changed = if enabled {
+            self.no_server_decorations.remove(&id)
+        } else {
+            self.no_server_decorations.insert(id.clone())
+        };
+
+        if changed {
+            self.redraw_requests.insert(id);
+        }
+    }
+
     pub fn output_logical_size(&self) -> Size<i32, Logical> {
         self.output.current_mode().map_or_else(
             || Size::new(WAYVR_SCREEN_RES[0], WAYVR_SCREEN_RES[1]),
@@ -218,6 +238,13 @@ impl Application {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
     }
+}
+
+fn drm_format_has_alpha(format: DrmFourcc) -> bool {
+    matches!(
+        format,
+        DrmFourcc::Abgr8888 | DrmFourcc::Argb8888 | DrmFourcc::Abgr2101010
+    )
 }
 
 impl compositor::CompositorHandler for Application {
@@ -260,6 +287,7 @@ impl compositor::CompositorHandler for Application {
                                     ),
                                     scale: attrs.buffer_scale,
                                     dmabuf: true,
+                                    has_alpha: drm_format_has_alpha(dmabuf.format().code),
                                 };
 
                                 if let Some(old_buffer) =
@@ -287,6 +315,8 @@ impl compositor::CompositorHandler for Application {
                                         ),
                                         scale: attrs.buffer_scale,
                                         dmabuf: false,
+                                        has_alpha: shm_format_to_fourcc(buf.format)
+                                            .is_some_and(drm_format_has_alpha),
                                     };
                                     sbwi.apply_to_surface(states, None);
                                 }
@@ -308,6 +338,7 @@ impl compositor::CompositorHandler for Application {
                                     ),
                                     scale: attrs.buffer_scale,
                                     dmabuf: false,
+                                    has_alpha: true,
                                 };
                                 sbwi.apply_to_surface(states, None);
                             }
@@ -459,6 +490,8 @@ impl XdgShellHandler for Application {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.output.leave(surface.wl_surface());
+        self.no_server_decorations
+            .remove(&surface.wl_surface().id());
 
         if let Some(client) = surface.wl_surface().client() {
             self.wayvr_tasks
@@ -672,24 +705,26 @@ impl selection_ext::DataControlHandler for Application {
 }
 impl XdgDecorationHandler for Application {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        self.set_server_side_decorations(toplevel.wl_surface(), true);
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
         });
         toplevel.send_configure();
     }
 
-    fn request_mode(
-        &mut self,
-        toplevel: ToplevelSurface,
-        _mode: zxdg_toplevel_decoration_v1::Mode,
-    ) {
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: zxdg_toplevel_decoration_v1::Mode) {
+        self.set_server_side_decorations(
+            toplevel.wl_surface(),
+            matches!(mode, zxdg_toplevel_decoration_v1::Mode::ServerSide),
+        );
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            state.decoration_mode = Some(mode);
         });
         toplevel.send_configure();
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        self.set_server_side_decorations(toplevel.wl_surface(), true);
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
         });
@@ -704,11 +739,19 @@ impl KdeDecorationHandler for Application {
 
     fn request_mode(
         &mut self,
-        _surface: &WlSurface,
+        surface: &WlSurface,
         decoration: &org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
-        _mode: wayland_server::WEnum<org_kde_kwin_server_decoration::Mode>,
+        mode: wayland_server::WEnum<org_kde_kwin_server_decoration::Mode>,
     ) {
-        decoration.mode(org_kde_kwin_server_decoration::Mode::Server);
+        let wayland_server::WEnum::Value(mode) = mode else {
+            return;
+        };
+
+        self.set_server_side_decorations(
+            surface,
+            matches!(mode, org_kde_kwin_server_decoration::Mode::Server),
+        );
+        decoration.mode(mode);
     }
 }
 

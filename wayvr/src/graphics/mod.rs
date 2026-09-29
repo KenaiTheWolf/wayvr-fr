@@ -10,7 +10,7 @@ use wgui::gfx::{
 use wlx_capture::DrmFormat;
 
 use crate::shaders::{
-    frag_color, frag_grid, frag_screen, frag_simple, frag_sky, frag_srgb, vert_quad,
+    frag_color, frag_grid, frag_screen, frag_simple, frag_sky, frag_srgb, frag_wayland, vert_quad,
 };
 
 use dmabuf::get_drm_formats;
@@ -32,6 +32,7 @@ impl WGfxExtras {
         shaders.insert("frag_grid", frag_grid::load(gfx)?);
         shaders.insert("frag_screen", frag_screen::load(gfx)?);
         shaders.insert("frag_simple", frag_simple::load(gfx)?);
+        shaders.insert("frag_wayland", frag_wayland::load(gfx)?);
 
         let drm_formats = get_drm_formats(gfx).into();
         let vertices = [

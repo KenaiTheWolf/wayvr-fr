@@ -91,6 +91,24 @@ pub mod frag_simple {
     }
 }
 
+pub mod frag_wayland {
+    use super::{Arc, DescriptorBinding, DescriptorType, ShaderModule, ShaderStage, WGfx};
+
+    pub fn load(gfx: &WGfx) -> anyhow::Result<Arc<ShaderModule>> {
+        super::load(
+            gfx,
+            include_bytes!(concat!(env!("OUT_DIR"), "/wayland.frag.spv")),
+            ShaderStage::Fragment,
+            &[DescriptorBinding::new(
+                0,
+                0,
+                DescriptorType::CombinedImageSampler,
+                ShaderStage::Fragment,
+            )],
+        )
+    }
+}
+
 pub mod frag_srgb {
     use super::{Arc, DescriptorBinding, DescriptorType, ShaderModule, ShaderStage, WGfx};
 

@@ -57,11 +57,44 @@ impl ScreenPipeline {
         offsetf: [f32; 2],
         transform: wlx_frame::Transform,
     ) -> anyhow::Result<Self> {
+        Self::new_with_shader(meta, app, stereo, offsetf, transform, "frag_screen")
+    }
+
+    pub fn new_wayland(
+        meta: &FrameMeta,
+        app: &mut AppState,
+        stereo: StereoMode,
+        offsetf: [f32; 2],
+        transform: wlx_frame::Transform,
+        has_alpha: bool,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_shader(
+            meta,
+            app,
+            stereo,
+            offsetf,
+            transform,
+            if has_alpha {
+                "frag_wayland"
+            } else {
+                "frag_screen"
+            },
+        )
+    }
+
+    fn new_with_shader(
+        meta: &FrameMeta,
+        app: &mut AppState,
+        stereo: StereoMode,
+        offsetf: [f32; 2],
+        transform: wlx_frame::Transform,
+        fragment_shader: &str,
+    ) -> anyhow::Result<Self> {
         let extentf = [meta.extent[0] as f32, meta.extent[1] as f32];
 
         let pipeline = app.gfx.create_pipeline(
             app.gfx_extras.shaders.get("vert_quad").unwrap(), // want panic
-            app.gfx_extras.shaders.get("frag_screen").unwrap(), // want panic
+            app.gfx_extras.shaders.get(fragment_shader).unwrap(), // want panic
             WPipelineCreateInfo::new(app.gfx.surface_format()).use_updatable_descriptors([0]),
         )?;
 

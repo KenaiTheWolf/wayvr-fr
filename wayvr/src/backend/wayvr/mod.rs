@@ -297,6 +297,7 @@ impl WvrServerState {
             popup_manager: PopupManager::default(),
             viewporter,
             redraw_requests: HashSet::new(),
+            no_server_decorations: HashSet::new(),
             pending_frame_callbacks: HashMap::new(),
             cursor_image: CursorImageStatus::default_named(),
             vr_pointer: 0,
@@ -1040,6 +1041,7 @@ impl WvrServerState {
                         &toplevel,
                         &self.manager.state.popup_manager,
                         inner_extent,
+                        self.manager.state.has_server_side_decorations(&toplevel),
                     );
 
                     let new_x = (hover.pos.x + mouse_delta.x).clamp(0., inner_extent[0] as f64);
@@ -1436,6 +1438,7 @@ pub struct SurfaceBufWithImage {
     pub transform: Transform,
     pub scale: i32,
     pub dmabuf: bool,
+    pub has_alpha: bool,
 }
 
 impl SurfaceBufWithImage {

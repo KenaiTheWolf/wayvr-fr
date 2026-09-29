@@ -18,7 +18,7 @@ use wgui::{
     components::button::ComponentButton,
     event::{CallbackDataCommon, EventCallback},
     gfx::{
-        BLEND_ALPHA, BufferUsage, ImageView, Scissor, Vert2Uv,
+        AttachmentBlend, BlendFactor, BlendOp, BufferUsage, ImageView, Scissor, Vert2Uv,
         cmd::WGfxClearMode,
         pipeline::{WGfxPipeline, WPipelineCreateInfo},
         upload_quad_vertices,
@@ -76,6 +76,15 @@ pub enum WvrCommand {
 
 const BORDER_SIZE: u32 = 5;
 const BAR_SIZE: u32 = 48;
+
+const BLEND_WAYLAND_ALPHA: AttachmentBlend = AttachmentBlend {
+    src_color_blend_factor: BlendFactor::One,
+    dst_color_blend_factor: BlendFactor::OneMinusSrcAlpha,
+    color_blend_op: BlendOp::Add,
+    src_alpha_blend_factor: BlendFactor::One,
+    dst_alpha_blend_factor: BlendFactor::OneMinusSrcAlpha,
+    alpha_blend_op: BlendOp::Add,
+};
 
 pub fn create_wl_window_overlay(
     name: Arc<str>,
@@ -136,7 +145,8 @@ pub struct WvrWindowBackend {
     name: Arc<str>,
     icon: Arc<str>,
     pipeline: Option<ScreenPipeline>,
-    subsurface_pipeline: Arc<WGfxPipeline<Vert2Uv>>,
+    subsurface_pipeline_opaque: Arc<WGfxPipeline<Vert2Uv>>,
+    subsurface_pipeline_alpha: Arc<WGfxPipeline<Vert2Uv>>,
     popup_outside_button: Option<wayvr::MouseIndex>,
     interaction_transform: Option<Affine2>,
     window: WindowHandle,
@@ -160,6 +170,8 @@ pub struct WvrWindowBackend {
     scale: (f32, f32),
     resizable: bool,
     had_focus: bool,
+    server_side_decorations: bool,
+    source_has_alpha: bool,
 }
 
 impl WvrWindowBackend {
@@ -171,10 +183,15 @@ impl WvrWindowBackend {
         scale: (f32, f32),
         resizable: bool,
     ) -> anyhow::Result<Self> {
-        let subsurface_pipeline = app.gfx.create_pipeline(
+        let subsurface_pipeline_opaque = app.gfx.create_pipeline(
             app.gfx_extras.shaders.get("vert_quad").unwrap(), // want panic
-            app.gfx_extras.shaders.get("frag_simple").unwrap(), // want panic
-            WPipelineCreateInfo::new(app.gfx.surface_format()).use_blend(BLEND_ALPHA),
+            app.gfx_extras.shaders.get("frag_screen").unwrap(), // want panic
+            WPipelineCreateInfo::new(app.gfx.surface_format()).use_blend(BLEND_WAYLAND_ALPHA),
+        )?;
+        let subsurface_pipeline_alpha = app.gfx.create_pipeline(
+            app.gfx_extras.shaders.get("vert_quad").unwrap(), // want panic
+            app.gfx_extras.shaders.get("frag_wayland").unwrap(), // want panic
+            WPipelineCreateInfo::new(app.gfx.surface_format()).use_blend(BLEND_WAYLAND_ALPHA),
         )?;
 
         let on_custom_attrib: OnCustomAttribFunc =
@@ -241,7 +258,8 @@ impl WvrWindowBackend {
             popups: Default::default(),
             surfaces: Default::default(),
             hit_context: None,
-            subsurface_pipeline,
+            subsurface_pipeline_opaque,
+            subsurface_pipeline_alpha,
             popup_outside_button: None,
             interaction_transform: None,
             just_resumed: false,
@@ -265,7 +283,25 @@ impl WvrWindowBackend {
             scale,
             resizable,
             had_focus: false,
+            server_side_decorations: true,
+            source_has_alpha: false,
         })
+    }
+
+    const fn content_offset(&self) -> [f32; 2] {
+        if self.server_side_decorations {
+            [BORDER_SIZE as f32, (BAR_SIZE + BORDER_SIZE) as f32]
+        } else {
+            [0.0, 0.0]
+        }
+    }
+
+    const fn panel_height(&self) -> u32 {
+        if self.server_side_decorations {
+            BORDER_SIZE * 2 + BAR_SIZE
+        } else {
+            0
+        }
     }
 
     fn apply_extent(&mut self, app: &mut AppState, meta: &FrameMeta) -> anyhow::Result<()> {
@@ -308,15 +344,20 @@ impl WvrWindowBackend {
 
         self.interaction_transform = Some(ui_transform(meta.extent));
 
-        let mut scale = vec2(
-            ((meta.extent[0] + BORDER_SIZE * 2) as f32) / meta.extent[0] as f32,
-            ((meta.extent[1] + BORDER_SIZE * 2 + BAR_SIZE) as f32) / meta.extent[1] as f32,
-        );
-
-        let mut translation = vec2(
-            -(BORDER_SIZE as f32) / meta.extent[0] as f32,
-            -((BORDER_SIZE + BAR_SIZE) as f32) / meta.extent[1] as f32,
-        );
+        let (mut scale, mut translation) = if self.server_side_decorations {
+            (
+                vec2(
+                    ((meta.extent[0] + BORDER_SIZE * 2) as f32) / meta.extent[0] as f32,
+                    ((meta.extent[1] + BORDER_SIZE * 2 + BAR_SIZE) as f32) / meta.extent[1] as f32,
+                ),
+                vec2(
+                    -(BORDER_SIZE as f32) / meta.extent[0] as f32,
+                    -((BORDER_SIZE + BAR_SIZE) as f32) / meta.extent[1] as f32,
+                ),
+            )
+        } else {
+            (vec2(1.0, 1.0), vec2(0.0, 0.0))
+        };
 
         if self.stereo_adjust_mouse
             && let Some(stereo) = self.stereo
@@ -337,11 +378,13 @@ impl WvrWindowBackend {
         self.mouse_transform = Affine2::from_scale_angle_translation(scale, 0.0, translation);
         self.uv_range = translation[0]..=(1.0 - translation[0]);
 
-        self.panel.max_size = vec2(
-            (meta.extent[0]/*  + BORDER_SIZE * 2 (disabled for now) */) as _,
-            BAR_SIZE as _,
-        );
-        self.panel.update_layout(app)?;
+        if self.server_side_decorations {
+            self.panel.max_size = vec2(
+                (meta.extent[0]/*  + BORDER_SIZE * 2 (disabled for now) */) as _,
+                BAR_SIZE as _,
+            );
+            self.panel.update_layout(app)?;
+        }
 
         Ok(())
     }
@@ -433,20 +476,23 @@ impl WvrWindowBackend {
             &buf_vert, extentf[0], extentf[1], s.pos.x, s.pos.y, s.size.x, s.size.y,
         )?;
 
-        let set0 = self.subsurface_pipeline.uniform_sampler(
-            0,
-            s.image.clone(),
-            app.gfx.texture_filter(),
-        )?;
+        let pipeline = if s.has_alpha {
+            &self.subsurface_pipeline_alpha
+        } else {
+            &self.subsurface_pipeline_opaque
+        };
 
-        let pass = self.subsurface_pipeline.create_pass(
+        let set0 = pipeline.uniform_sampler(0, s.image.clone(), app.gfx.texture_filter())?;
+
+        let offset = self.content_offset();
+        let pass = pipeline.create_pass(
             extentf,
-            [BORDER_SIZE as _, (BAR_SIZE + BORDER_SIZE) as _],
+            offset,
             buf_vert,
             0..4,
             0..1,
             vec![set0],
-            Scissor::from_viewport(extentf, [BORDER_SIZE as _, (BAR_SIZE + BORDER_SIZE) as _]),
+            Scissor::from_viewport(extentf, offset),
         )?;
 
         for buf in &mut rdr.cmd_bufs {
@@ -514,6 +560,14 @@ impl OverlayBackend for WvrWindowBackend {
             return Ok(ShouldRender::Unable);
         };
 
+        let server_side_decorations = app.wvr_server.as_ref().is_none_or(|wvr| {
+            wvr.manager
+                .state
+                .has_server_side_decorations(toplevel.wl_surface())
+        });
+        let decoration_changed = self.server_side_decorations != server_side_decorations;
+        self.server_side_decorations = server_side_decorations;
+
         let surface_id = toplevel.wl_surface().id();
         let surfaces = collect_rendered_surface_tree(toplevel.wl_surface());
 
@@ -552,7 +606,9 @@ impl OverlayBackend for WvrWindowBackend {
         let mut tree_dirty = false;
 
         if let Some(wvr_server) = app.wvr_server.as_mut() {
-            self.update_decor(wvr_server);
+            if self.server_side_decorations {
+                self.update_decor(wvr_server);
+            }
 
             let state = &mut wvr_server.manager.state;
             tree_dirty |= state.take_redraw_request(&surface_id);
@@ -567,8 +623,12 @@ impl OverlayBackend for WvrWindowBackend {
             }
         }
 
-        let should_render_panel = self.panel.should_render(app)?;
-        let force_render = tree_dirty || mem::take(&mut self.just_resumed);
+        let should_render_panel = if self.server_side_decorations {
+            self.panel.should_render(app)?
+        } else {
+            ShouldRender::Can
+        };
+        let just_resumed = mem::take(&mut self.just_resumed);
 
         let hit_surfaces = surfaces.clone();
         self.surfaces = surfaces;
@@ -578,6 +638,13 @@ impl OverlayBackend for WvrWindowBackend {
             log::trace!("{}: no buffer for wl_surface", self.name);
             return Ok(ShouldRender::Unable);
         };
+
+        let source_alpha_changed = self.source_has_alpha != surf.has_alpha;
+        self.source_has_alpha = surf.has_alpha;
+        if source_alpha_changed && self.pipeline.is_some() {
+            self.pipeline = None;
+        }
+        let force_render = tree_dirty || decoration_changed || source_alpha_changed || just_resumed;
 
         let mut meta = FrameMeta {
             extent: surf.image.extent_2d(),
@@ -605,41 +672,46 @@ impl OverlayBackend for WvrWindowBackend {
         let inner_extent = meta.extent;
         self.sync_committed_toplevel_size(app, inner_extent);
 
-        let hit_context = WvrHitContext {
-            surfaces: hit_surfaces,
-            popup_roots: popup_roots.into(),
-            mouse_transform: self.mouse_transform,
-            uv_range: self.uv_range.clone(),
-            inner_extent,
-            panel_height: BORDER_SIZE * 2 + BAR_SIZE,
-        };
-        self.hit_context = Some(hit_context);
+        if self.server_side_decorations {
+            meta.extent[0] += BORDER_SIZE * 2;
+            meta.extent[1] += BORDER_SIZE * 2 + BAR_SIZE;
+        }
 
-        meta.extent[0] += BORDER_SIZE * 2;
-        meta.extent[1] += BORDER_SIZE * 2 + BAR_SIZE;
+        let content_offset = self.content_offset();
 
         if let Some(pipeline) = self.pipeline.as_mut() {
-            if self.inner_extent != inner_extent {
+            if self.inner_extent != inner_extent || decoration_changed {
                 pipeline.set_layout(
                     app,
                     [inner_extent[0] as _, inner_extent[1] as _],
-                    [BORDER_SIZE as _, (BAR_SIZE + BORDER_SIZE) as _],
+                    content_offset,
                     Transform::Normal,
                 )?;
                 self.apply_extent(app, &meta)?;
                 self.inner_extent = inner_extent;
             }
         } else {
-            let pipeline = ScreenPipeline::new(
+            let pipeline = ScreenPipeline::new_wayland(
                 &meta,
                 app,
                 self.stereo.unwrap_or(StereoMode::None),
-                [BORDER_SIZE as _, (BAR_SIZE + BORDER_SIZE) as _],
+                content_offset,
                 Transform::Normal,
+                self.source_has_alpha,
             )?;
             self.apply_extent(app, &meta)?;
             self.pipeline = Some(pipeline);
         }
+
+        let hit_context = WvrHitContext {
+            surfaces: hit_surfaces,
+            popup_roots: popup_roots.into(),
+            mouse_transform: self.mouse_transform,
+            uv_range: self.uv_range.clone(),
+            inner_extent,
+            panel_height: self.panel_height(),
+        };
+        self.hit_context = Some(hit_context);
 
         let mouse = app
             .wvr_server
@@ -690,12 +762,14 @@ impl OverlayBackend for WvrWindowBackend {
         app: &mut state::AppState,
         rdr: &mut RenderResources,
     ) -> anyhow::Result<()> {
-        self.panel.render(app, rdr)?;
-        // `GuiPanel` is not stereo-aware, so just render the same pass twice
-        if rdr.cmd_bufs.len() > 1 {
-            rdr.cmd_bufs.reverse();
+        if self.server_side_decorations {
             self.panel.render(app, rdr)?;
-            rdr.cmd_bufs.reverse();
+            // `GuiPanel` is not stereo-aware, so just render the same pass twice
+            if rdr.cmd_bufs.len() > 1 {
+                rdr.cmd_bufs.reverse();
+                self.panel.render(app, rdr)?;
+                rdr.cmd_bufs.reverse();
+            }
         }
 
         let image = self.cur_image.as_ref().unwrap().clone();

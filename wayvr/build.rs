@@ -8,6 +8,7 @@ const SHADERS: &[(&str, ShaderKind)] = &[
     ("grid.frag", ShaderKind::Fragment),
     ("screen.frag", ShaderKind::Fragment),
     ("simple.frag", ShaderKind::Fragment),
+    ("wayland.frag", ShaderKind::Fragment),
     ("srgb.frag", ShaderKind::Fragment),
     ("sky.frag", ShaderKind::Fragment),
 ];

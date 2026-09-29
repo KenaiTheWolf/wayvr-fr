@@ -34,6 +34,7 @@ pub struct RenderedSurface {
     pub image: Arc<ImageView>,
     pub pos: Vec2,
     pub size: Vec2,
+    pub has_alpha: bool,
 }
 
 #[derive(Clone)]
@@ -215,6 +216,7 @@ pub fn collect_rendered_surface_tree_at(
                     image: surf.image,
                     pos: Vec2::new(pos.x as f32, pos.y as f32),
                     size: Vec2::new(extent[0] / scale, extent[1] / scale),
+                    has_alpha: surf.has_alpha,
                 });
             }
         },
@@ -326,11 +328,19 @@ pub fn rendered_surfaces_dirty(old: &[RenderedSurface], new: &[RenderedSurface])
         a.surface_id != b.surface_id
             || a.pos != b.pos
             || a.size != b.size
+            || a.has_alpha != b.has_alpha
             || !Arc::ptr_eq(a.image.image(), b.image.image())
     })
 }
 
-pub fn compute_transforms(inner_extent: [u32; 2]) -> (Affine2, RangeInclusive<f32>) {
+pub fn compute_transforms(
+    inner_extent: [u32; 2],
+    server_side_decorations: bool,
+) -> (Affine2, RangeInclusive<f32>) {
+    if !server_side_decorations {
+        return (Affine2::IDENTITY, 0.0..=1.0);
+    }
+
     let ix = inner_extent[0].max(1) as f32;
     let iy = inner_extent[1].max(1) as f32;
 
@@ -357,9 +367,14 @@ pub fn build_hit_context(
     toplevel: &WlSurface,
     _popup_manager: &PopupManager,
     inner_extent: [u32; 2],
+    server_side_decorations: bool,
 ) -> WvrHitContext {
-    let (mouse_transform, uv_range) = compute_transforms(inner_extent);
-    let panel_height = BORDER_SIZE * 2 + BAR_SIZE;
+    let (mouse_transform, uv_range) = compute_transforms(inner_extent, server_side_decorations);
+    let panel_height = if server_side_decorations {
+        BORDER_SIZE * 2 + BAR_SIZE
+    } else {
+        0
+    };
 
     let surfaces = collect_rendered_surface_tree(toplevel);
 

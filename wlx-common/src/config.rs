@@ -387,7 +387,7 @@ pub struct GeneralConfig {
 	#[serde(default = "def_true")]
 	pub enable_watch: bool,
 
-	#[serde(default)]
+	#[serde(default = "def_true")]
 	pub sets_on_watch: bool,
 
 	#[serde(default)]

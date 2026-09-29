@@ -7,7 +7,9 @@ use crate::{
     state::AppState,
     subsystem::input::InputFocus,
     windowing::{
-        backend::{FrameMeta, OverlayBackend, OverlayLifetimeUpdate, RenderResources, ShouldRender},
+        backend::{
+            FrameMeta, OverlayBackend, OverlayLifetimeUpdate, RenderResources, ShouldRender,
+        },
         raycast_overlay, snap_upright,
     },
 };
@@ -207,9 +209,7 @@ impl OverlayWindowConfig {
             lifetime.remaining = (lifetime.remaining - elapsed).max(0.0);
         }
 
-        let alpha = if lifetime.fade_duration > 0.0
-            && lifetime.remaining < lifetime.fade_duration
-        {
+        let alpha = if lifetime.fade_duration > 0.0 && lifetime.remaining < lifetime.fade_duration {
             let fade = (lifetime.remaining / lifetime.fade_duration).clamp(0.0, 1.0);
             lifetime.base_alpha * fade * fade
         } else {

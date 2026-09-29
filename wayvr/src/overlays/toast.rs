@@ -202,14 +202,12 @@ fn new_toast(toast: BakedToast, app: &mut AppState) -> Option<OverlayWindowConfi
         }
     };
 
-    let fade_duration = if toast.params.animate
-        && toast.params.timeout > 0.5
-        && toast.params.timeout < 150.0
-    {
-        0.5
-    } else {
-        0.0
-    };
+    let fade_duration =
+        if toast.params.animate && toast.params.timeout > 0.5 && toast.params.timeout < 150.0 {
+            0.5
+        } else {
+            0.0
+        };
 
     let title = Translation::from_raw_text(&toast.title_raw);
     let body = Translation::from_raw_text(&toast.body_raw);
@@ -265,8 +263,7 @@ fn new_toast(toast: BakedToast, app: &mut AppState) -> Option<OverlayWindowConfi
         let progress = update.progress();
         if (progress - last_progress).abs() > f32::EPSILON {
             if let Some(widget) = panel.layout.state.widgets.get(id_rect_separator).cloned() {
-                widget.state().data.transform =
-                    Mat4::from_scale(Vec3::new(progress, 1.0, 1.0));
+                widget.state().data.transform = Mat4::from_scale(Vec3::new(progress, 1.0, 1.0));
                 panel.layout.alterables.mark_redraw();
             }
             last_progress = progress;

@@ -18,9 +18,7 @@ use wgui::{
 };
 use wlx_common::{
 	config_io,
-	openxr_actions::{
-		OneOrMany, OpenXrInputAction, OpenXrInputChordMember, OpenXrInputProfile, load_xr_input_profiles,
-	},
+	openxr_actions::{OneOrMany, OpenXrInputAction, OpenXrInputChordMember, OpenXrInputProfile, load_xr_input_profiles},
 	openxr_bindings_schema::{
 		DEFAULT_BUTTON_THRESHOLDS, XrControllerProfile, XrInputComponent, XrInputSide, XrInputSubpathKind,
 	},
@@ -178,10 +176,8 @@ impl ViewTrait for View {
 					self.refresh(par.layout)?;
 				}
 				[kind, action_name, output_side, member_idx, value] => {
-					let (Ok(output_side), Ok(member_idx)) = (
-						XrInputSide::try_from(*output_side),
-						member_idx.parse::<usize>(),
-					) else {
+					let (Ok(output_side), Ok(member_idx)) = (XrInputSide::try_from(*output_side), member_idx.parse::<usize>())
+					else {
 						return Ok(());
 					};
 					let action_mut = get_action_mut(cur_profile, action_name);
@@ -502,16 +498,7 @@ fn input_controls_for_action(
 				} else {
 					current.left_chord.as_deref()
 				};
-				chord_controls_for_output(
-					mp,
-					parent,
-					&action,
-					output_side,
-					chord,
-					click_type,
-					profile,
-					true,
-				)?;
+				chord_controls_for_output(mp, parent, &action, output_side, chord, click_type, profile, true)?;
 			}
 		}
 	}
@@ -582,7 +569,9 @@ fn chord_member_controls(
 	profile: &XrControllerProfile,
 ) -> anyhow::Result<()> {
 	let row = horiz_cell(mp.layout, parent)?;
-	let parsed = ParsedOpenXrInputPath::try_from(member.path()).log_warn(member.path()).ok();
+	let parsed = ParsedOpenXrInputPath::try_from(member.path())
+		.log_warn(member.path())
+		.ok();
 	let physical_side = parsed.as_ref().map(|x| x.side).unwrap_or(output_side);
 
 	chord_hand_dropdown(mp, row, action.clone(), output_side, member_idx, profile, physical_side)?;
@@ -650,14 +639,7 @@ fn chord_member_controls(
 
 	// put threshold slider on its own row
 	if parsed.as_ref().is_some_and(|x| x.component.is_analog()) {
-		chord_threshold_slider(
-			mp,
-			parent,
-			action.clone(),
-			output_side,
-			member_idx,
-			member.threshold(),
-		)?;
+		chord_threshold_slider(mp, parent, action.clone(), output_side, member_idx, member.threshold())?;
 	}
 
 	Ok(())
@@ -1149,10 +1131,7 @@ fn action_chord_mut(
 	}
 }
 
-fn action_binding_mut<'a>(
-	action: &'a mut OpenXrInputAction,
-	side: &str,
-) -> &'a mut Option<OneOrMany<String>> {
+fn action_binding_mut<'a>(action: &'a mut OpenXrInputAction, side: &str) -> &'a mut Option<OneOrMany<String>> {
 	if side == "right" {
 		&mut action.right
 	} else {
@@ -1177,10 +1156,7 @@ fn apply_click_count(action: &mut OpenXrInputAction, value: &str) {
 	}
 }
 
-fn default_chord_member(
-	profile: &XrControllerProfile,
-	preferred_side: XrInputSide,
-) -> Option<OpenXrInputChordMember> {
+fn default_chord_member(profile: &XrControllerProfile, preferred_side: XrInputSide) -> Option<OpenXrInputChordMember> {
 	let other_side = match preferred_side {
 		XrInputSide::Left => XrInputSide::Right,
 		XrInputSide::Right => XrInputSide::Left,
@@ -1209,11 +1185,7 @@ fn default_chord_member(
 	None
 }
 
-fn set_chord_member_path(
-	member: &mut OpenXrInputChordMember,
-	path: String,
-	component: XrInputComponent,
-) {
+fn set_chord_member_path(member: &mut OpenXrInputChordMember, path: String, component: XrInputComponent) {
 	let threshold = if component.is_analog() {
 		member.threshold()
 	} else {
@@ -1234,11 +1206,7 @@ fn set_chord_member_threshold(member: &mut OpenXrInputChordMember, threshold: [f
 	};
 }
 
-fn apply_chord_hand(
-	member: &mut OpenXrInputChordMember,
-	side: XrInputSide,
-	profile: &XrControllerProfile,
-) {
+fn apply_chord_hand(member: &mut OpenXrInputChordMember, side: XrInputSide, profile: &XrControllerProfile) {
 	let parsed = ParsedOpenXrInputPath::try_from(member.path()).ok();
 	let Some(user_path) = profile.find_userpath(side) else {
 		return;
@@ -1248,9 +1216,10 @@ fn apply_chord_hand(
 		.and_then(|parsed| user_path.find_subpath(parsed.subpath))
 		.filter(|subpath| !subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty())
 		.or_else(|| {
-			user_path.paths.iter().find(|subpath| {
-				!subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty()
-			})
+			user_path
+				.paths
+				.iter()
+				.find(|subpath| !subpath.kind.get_bool("Hidden").unwrap_or_default() && !subpath.components.is_empty())
 		});
 	let Some(subpath) = subpath else {
 		return;

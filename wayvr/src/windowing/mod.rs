@@ -36,7 +36,14 @@ pub fn raycast_overlay(
     curvature: Option<f32>,
 ) -> Option<(f32, Vec2)> {
     let (dist, local_pos) = curvature.map_or_else(
-        || Some(raycast_plane(source, Vec3A::NEG_Z, overlay_pose, Vec3A::NEG_Z)),
+        || {
+            Some(raycast_plane(
+                source,
+                Vec3A::NEG_Z,
+                overlay_pose,
+                Vec3A::NEG_Z,
+            ))
+        },
         |curvature| raycast_cylinder(source, Vec3A::NEG_Z, overlay_pose, curvature),
     )?;
 

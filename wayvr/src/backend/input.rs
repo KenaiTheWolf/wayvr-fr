@@ -783,7 +783,7 @@ where
         let Some(overlay_state) = overlay.config.active_state.as_ref() else {
             continue;
         };
-        if !overlay_state.interactable && !edit_mode {
+        if (!overlay_state.interactable || overlay_state.alpha < 0.025) && !edit_mode {
             continue;
         }
 

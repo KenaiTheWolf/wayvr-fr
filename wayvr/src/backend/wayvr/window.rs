@@ -74,7 +74,10 @@ impl Window {
     fn send_size_configure(&mut self, size: Size<i32, Logical>, bounds: Size<i32, Logical>) {
         let clamped_size = self.clamp_configure_size(size, bounds);
 
-        if self.pending_configure.is_some_and(|pending| pending.size == clamped_size) {
+        if self
+            .pending_configure
+            .is_some_and(|pending| pending.size == clamped_size)
+        {
             return;
         }
 

@@ -343,8 +343,9 @@ impl OpenXrInputSource {
 
         let mut any_tracked = false;
         let old_handsfree = app.session.config.handsfree_pointer;
+        let picking_focus = app.input_state.picking_focus;
 
-        if app.input_state.picking_focus.is_none() {
+        if picking_focus.is_none() {
             let should_disable_lerp = app.input_state.should_disable_lerp();
             for i in 0..2 {
                 let pointer = &mut app.input_state.pointers[i];
@@ -365,13 +366,15 @@ impl OpenXrInputSource {
             app.input_state.handsfree_state.scroll_y =
                 app.input_state.handsfree_state.scroll_y.lerp(0.0, 0.7);
 
-            let ptr1 = &mut app.input_state.pointers[1];
-            ptr1.before = ptr1.now;
-            ptr1.now = PointerState::default();
-            ptr1.tracked = false;
+            for pointer in &mut app.input_state.pointers {
+                pointer.before = pointer.now;
+                pointer.now = PointerState::default();
+                pointer.tracked = false;
+                pointer.handsfree = false;
+            }
         }
 
-        if !any_tracked {
+        if !picking_focus.is_none() || !any_tracked {
             self.handsfree_pointer.update_handsfree(
                 &mut app.input_state.pointers[0],
                 xr,
@@ -381,9 +384,9 @@ impl OpenXrInputSource {
                 &app.input_state.handsfree_state,
                 physical_inputs,
             )?;
-
-            app.session.config.handsfree_pointer = old_handsfree;
         }
+
+        app.session.config.handsfree_pointer = old_handsfree;
 
         Ok(())
     }

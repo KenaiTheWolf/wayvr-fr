@@ -35,6 +35,8 @@ pub struct RenderedSurface {
     pub pos: Vec2,
     pub size: Vec2,
     pub has_alpha: bool,
+    /// normalized source rect in backing wl_buffer
+    pub source_uv: [f32; 4],
 }
 
 #[derive(Clone)]
@@ -207,16 +209,17 @@ pub fn collect_rendered_surface_tree_at(
             let pos = *parent_pos + surface_location(states);
 
             if let Some(surf) = SurfaceBufWithImage::get_from_surface(states) {
-                let extent = surf.image.extent_f32();
-                let scale = surf.scale.max(1) as f32;
+                let logical_size = surf.logical_size(states);
+                let source_uv = surf.source_uv(states);
 
                 out.push(RenderedSurface {
                     surface: surface.clone(),
                     surface_id: surface.id(),
                     image: surf.image,
                     pos: Vec2::new(pos.x as f32, pos.y as f32),
-                    size: Vec2::new(extent[0] / scale, extent[1] / scale),
+                    size: Vec2::new(logical_size.w as f32, logical_size.h as f32),
                     has_alpha: surf.has_alpha,
+                    source_uv,
                 });
             }
         },
@@ -274,10 +277,8 @@ fn surface_accepts_input_states(
 
     // fallback for normal rendered surfaces
     if let Some(surf) = SurfaceBufWithImage::get_from_surface(states) {
-        let extent = surf.image.extent_f32();
-        let scale = surf.scale.max(1) as f32;
-
-        return local.x < extent[0] / scale && local.y < extent[1] / scale;
+        let size = surf.logical_size(states);
+        return local.x < size.w as f32 && local.y < size.h as f32;
     }
 
     false
@@ -329,6 +330,7 @@ pub fn rendered_surfaces_dirty(old: &[RenderedSurface], new: &[RenderedSurface])
             || a.pos != b.pos
             || a.size != b.size
             || a.has_alpha != b.has_alpha
+            || a.source_uv != b.source_uv
             || !Arc::ptr_eq(a.image.image(), b.image.image())
     })
 }

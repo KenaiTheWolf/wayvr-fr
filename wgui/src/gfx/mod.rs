@@ -57,27 +57,41 @@ pub fn upload_quad_vertices(
 	w: f32,
 	h: f32,
 ) -> anyhow::Result<()> {
+	upload_quad_vertices_uv(buf, width, height, x, y, w, h, [0.0, 0.0, 1.0, 1.0])
+}
+
+pub fn upload_quad_vertices_uv(
+	buf: &Buffer<Vert2Uv>,
+	width: f32,
+	height: f32,
+	x: f32,
+	y: f32,
+	w: f32,
+	h: f32,
+	uv: [f32; 4],
+) -> anyhow::Result<()> {
 	let x0 = x / width;
 	let y0 = y / height;
 	let x1 = w / width + x0;
 	let y1 = h / height + y0;
+	let [u0, v0, u1, v1] = uv;
 
 	let data = [
 		Vert2Uv {
 			in_pos: [x0, y0],
-			in_uv: [0.0, 0.0],
+			in_uv: [u0, v0],
 		},
 		Vert2Uv {
 			in_pos: [x0, y1],
-			in_uv: [0.0, 1.0],
+			in_uv: [u0, v1],
 		},
 		Vert2Uv {
 			in_pos: [x1, y0],
-			in_uv: [1.0, 0.0],
+			in_uv: [u1, v0],
 		},
 		Vert2Uv {
 			in_pos: [x1, y1],
-			in_uv: [1.0, 1.0],
+			in_uv: [u1, v1],
 		},
 	];
 

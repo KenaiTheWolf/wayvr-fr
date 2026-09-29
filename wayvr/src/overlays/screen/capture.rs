@@ -46,6 +46,7 @@ pub struct ScreenPipeline {
     transform: wlx_frame::Transform,
     stereo: StereoMode,
     stereo_adjust_mouse: bool,
+    source_uv: [f32; 4],
     fallback_image: Arc<ImageView>,
 }
 
@@ -121,6 +122,7 @@ impl ScreenPipeline {
             transform,
             stereo,
             stereo_adjust_mouse: false,
+            source_uv: [0.0, 0.0, 1.0, 1.0],
             fallback_image,
         };
         me.ensure_stereo(stereo);
@@ -138,6 +140,14 @@ impl ScreenPipeline {
 
     pub const fn set_stereo_adjust_mouse(&mut self, adjust: bool) {
         self.stereo_adjust_mouse = adjust;
+    }
+
+    /// Select normalized rect from backing image
+    pub fn set_source_uv(&mut self, source_uv: [f32; 4]) {
+        if self.source_uv != source_uv {
+            self.source_uv = source_uv;
+            self.pass.clear();
+        }
     }
 
     pub const fn transform(&self) -> wlx_frame::Transform {
@@ -160,7 +170,12 @@ impl ScreenPipeline {
         }
 
         for (eye, current) in self.pass.iter_mut().enumerate() {
-            let verts = stereo_mode_to_verts(self.stereo, eye, self.transform);
+            let mut verts = stereo_mode_to_verts(self.stereo, eye, self.transform);
+            let [u0, v0, u1, v1] = self.source_uv;
+            for vert in &mut verts {
+                vert.in_uv[0] = u0 + vert.in_uv[0] * (u1 - u0);
+                vert.in_uv[1] = v0 + vert.in_uv[1] * (v1 - v0);
+            }
             current.buf_vert.write()?.copy_from_slice(&verts);
         }
         Ok(())

@@ -208,12 +208,7 @@ impl Application {
 
     fn surface_logical_size(surface: &WlSurface) -> Option<Size<i32, Logical>> {
         smithay::wayland::compositor::with_states(surface, |states| {
-            SurfaceBufWithImage::get_from_surface(states).map(|buf| {
-                let extent = buf.image.extent_2d();
-                let scale = buf.scale.max(1) as u32;
-
-                Size::new((extent[0] / scale) as i32, (extent[1] / scale) as i32)
-            })
+            SurfaceBufWithImage::get_from_surface(states).map(|buf| buf.logical_size(states))
         })
     }
 
@@ -357,6 +352,19 @@ impl compositor::CompositorHandler for Application {
                     .entry(surface.id())
                     .or_default()
                     .extend(callbacks);
+            }
+        });
+
+        // validate wp_viewport against currently attached backing buffer
+        smithay::wayland::compositor::with_states(surface, |states| {
+            if let Some(buf) = SurfaceBufWithImage::get_from_surface(states) {
+                let extent = buf.image.extent_2d();
+                let scale = buf.scale.max(1) as u32;
+                let buffer_size = Size::new(
+                    (extent[0] / scale).max(1) as i32,
+                    (extent[1] / scale).max(1) as i32,
+                );
+                smithay::wayland::viewporter::ensure_viewport_valid(states, buffer_size);
             }
         });
 

@@ -9,7 +9,7 @@ use smithay::{
     utils::{Logical, Size},
     wayland::{
         compositor::with_states,
-        shell::xdg::{XdgPopupSurfaceData, XdgToplevelSurfaceData},
+        shell::xdg::{SurfaceCachedState, XdgPopupSurfaceData, XdgToplevelSurfaceData},
     },
 };
 use wayvr_ipc::packet_client::PositionMode;
@@ -21,7 +21,7 @@ use wgui::{
         AttachmentBlend, BlendFactor, BlendOp, BufferUsage, ImageView, Scissor, Vert2Uv,
         cmd::WGfxClearMode,
         pipeline::{WGfxPipeline, WPipelineCreateInfo},
-        upload_quad_vertices,
+        upload_quad_vertices_uv,
     },
     i18n::Translation,
     parser::Fetchable,
@@ -472,8 +472,15 @@ impl WvrWindowBackend {
             .gfx
             .empty_buffer(BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER, 4)?;
 
-        upload_quad_vertices(
-            &buf_vert, extentf[0], extentf[1], s.pos.x, s.pos.y, s.size.x, s.size.y,
+        upload_quad_vertices_uv(
+            &buf_vert,
+            extentf[0],
+            extentf[1],
+            s.pos.x,
+            s.pos.y,
+            s.size.x,
+            s.size.y,
+            s.source_uv,
         )?;
 
         let pipeline = if s.has_alpha {
@@ -516,16 +523,22 @@ impl WvrWindowBackend {
         };
 
         let clamped = window.clamp_configure_size(committed, bounds);
+        let configure_serial = with_states(window.toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|data| data.current_serial))
+        });
 
         if committed == clamped {
-            window.remember_committed_size(committed);
-        } else if window.pending_configure_size.is_none() {
+            window.remember_committed_size(committed, configure_serial);
+        } else if window.pending_configure.is_none() {
             log::warn!("Client committed invalid size {committed:?}; requesting {clamped:?}");
             window.request_size(clamped, bounds);
         } else {
             log::trace!(
                 "Client committed invalid size {committed:?}, but configure {:?} is already pending",
-                window.pending_configure_size,
+                window.pending_configure,
             );
         }
     }
@@ -633,7 +646,15 @@ impl OverlayBackend for WvrWindowBackend {
         let hit_surfaces = surfaces.clone();
         self.surfaces = surfaces;
 
-        let Some(surf) = with_states(toplevel.wl_surface(), SurfaceBufWithImage::get_from_surface)
+        let Some((surf, surface_size, source_uv, window_geometry)) =
+            with_states(toplevel.wl_surface(), |states| {
+                let surf = SurfaceBufWithImage::get_from_surface(states)?;
+                let surface_size = surf.logical_size(states);
+                let source_uv = surf.source_uv(states);
+                let mut xdg_state = states.cached_state.get::<SurfaceCachedState>();
+                let window_geometry = xdg_state.current().geometry;
+                Some((surf, surface_size, source_uv, window_geometry))
+            })
         else {
             log::trace!("{}: no buffer for wl_surface", self.name);
             return Ok(ShouldRender::Unable);
@@ -647,7 +668,7 @@ impl OverlayBackend for WvrWindowBackend {
         let force_render = tree_dirty || decoration_changed || source_alpha_changed || just_resumed;
 
         let mut meta = FrameMeta {
-            extent: surf.image.extent_2d(),
+            extent: [surface_size.w.max(1) as u32, surface_size.h.max(1) as u32],
             format: surf.image.format(),
             clear: WGfxClearMode::Clear([0.0, 0.0, 0.0, 0.0]),
             stereo: self.stereo.unwrap_or(StereoMode::None),
@@ -670,7 +691,10 @@ impl OverlayBackend for WvrWindowBackend {
         }
 
         let inner_extent = meta.extent;
-        self.sync_committed_toplevel_size(app, inner_extent);
+        let committed_window_extent = window_geometry
+            .map(|geometry| [geometry.size.w.max(1) as u32, geometry.size.h.max(1) as u32])
+            .unwrap_or(inner_extent);
+        self.sync_committed_toplevel_size(app, committed_window_extent);
 
         if self.server_side_decorations {
             meta.extent[0] += BORDER_SIZE * 2;
@@ -702,6 +726,8 @@ impl OverlayBackend for WvrWindowBackend {
             self.apply_extent(app, &meta)?;
             self.pipeline = Some(pipeline);
         }
+
+        self.pipeline.as_mut().unwrap().set_source_uv(source_uv);
 
         let hit_context = WvrHitContext {
             surfaces: hit_surfaces,
@@ -865,7 +891,12 @@ impl OverlayBackend for WvrWindowBackend {
                     log::warn!("Could not process resize request: window not found");
                     return Ok(());
                 };
-                let size: Size<i32, Logical> = Size::new(new_size[0] as i32, new_size[1] as i32);
+                // xdg_toplevel.configure has client window geometry, exclude decorations
+                let client_width = new_size[0].saturating_sub(BORDER_SIZE * 2).max(1);
+                let client_height = new_size[1]
+                    .saturating_sub(BORDER_SIZE * 2 + BAR_SIZE)
+                    .max(1);
+                let size: Size<i32, Logical> = Size::new(client_width as i32, client_height as i32);
                 win.checked_configure_size(size);
             }
             _ => {}
@@ -1164,7 +1195,12 @@ impl OverlayBackend for WvrWindowBackend {
                     log::warn!("Could not process resize request: window not found");
                     return true;
                 };
-                let size: Size<i32, Logical> = Size::new(new_size[0] as i32, new_size[1] as i32);
+                // xdg_toplevel.configure has client window geometry, exclude decorations
+                let client_width = new_size[0].saturating_sub(BORDER_SIZE * 2).max(1);
+                let client_height = new_size[1]
+                    .saturating_sub(BORDER_SIZE * 2 + BAR_SIZE)
+                    .max(1);
+                let size: Size<i32, Logical> = Size::new(client_width as i32, client_height as i32);
                 win.checked_configure_size(size);
                 true
             }

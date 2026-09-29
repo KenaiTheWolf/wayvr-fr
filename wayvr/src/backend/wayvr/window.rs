@@ -2,11 +2,17 @@ use std::rc::Rc;
 
 use glam::DVec2;
 use slotmap::{DenseSlotMap, new_key_type};
-use smithay::utils::{Logical, Size};
+use smithay::utils::{Logical, Serial, Size};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use wayvr_ipc::packet_server;
 
 use crate::backend::wayvr::process;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PendingConfigure {
+    pub size: Size<i32, Logical>,
+    pub serial: Serial,
+}
 
 #[derive(Debug)]
 pub struct Window {
@@ -19,7 +25,7 @@ pub struct Window {
     pub toplevel: Rc<ToplevelSurface>,
     pub process: process::ProcessHandle,
 
-    pub pending_configure_size: Option<Size<i32, Logical>>,
+    pub pending_configure: Option<PendingConfigure>,
 }
 
 impl Window {
@@ -39,7 +45,7 @@ impl Window {
             visible: true,
             toplevel,
             process,
-            pending_configure_size: None,
+            pending_configure: None,
         }
     }
 
@@ -68,7 +74,7 @@ impl Window {
     fn send_size_configure(&mut self, size: Size<i32, Logical>, bounds: Size<i32, Logical>) {
         let clamped_size = self.clamp_configure_size(size, bounds);
 
-        if self.pending_configure_size == Some(clamped_size) {
+        if self.pending_configure.is_some_and(|pending| pending.size == clamped_size) {
             return;
         }
 
@@ -77,10 +83,13 @@ impl Window {
             state.size = Some(clamped_size);
         });
 
-        self.toplevel.send_configure();
+        let serial = self.toplevel.send_configure();
 
         self.bounds = bounds;
-        self.pending_configure_size = Some(clamped_size);
+        self.pending_configure = Some(PendingConfigure {
+            size: clamped_size,
+            serial,
+        });
     }
 
     pub fn checked_configure_size(&mut self, size: Size<i32, Logical>) {
@@ -91,7 +100,11 @@ impl Window {
         self.send_size_configure(size, bounds);
     }
 
-    pub fn remember_committed_size(&mut self, size: Size<i32, Logical>) -> bool {
+    pub fn remember_committed_size(
+        &mut self,
+        size: Size<i32, Logical>,
+        configure_serial: Option<Serial>,
+    ) -> bool {
         let size_x = size.w.max(1) as u32;
         let size_y = size.h.max(1) as u32;
 
@@ -100,7 +113,12 @@ impl Window {
         self.size_x = size_x;
         self.size_y = size_y;
 
-        self.pending_configure_size = None;
+        if self
+            .pending_configure
+            .is_some_and(|pending| Some(pending.serial) == configure_serial)
+        {
+            self.pending_configure = None;
+        }
 
         changed
     }
@@ -155,7 +173,7 @@ impl WindowManager {
             par.min_size,
             par.max_size,
         );
-        window.remember_committed_size(Size::new(par.size_x as i32, par.size_y as i32));
+        window.remember_committed_size(Size::new(par.size_x as i32, par.size_y as i32), None);
         self.windows.insert(window)
     }
 

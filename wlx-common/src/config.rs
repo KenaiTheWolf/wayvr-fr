@@ -114,7 +114,7 @@ pub enum AltModifier {
 pub enum HandsfreePointer {
 	#[strum(props(Translation = "APP_SETTINGS.OPTION.NONE"))]
 	None,
-	#[strum(props(Translation = "APP_SETTINGS.OPTION.HMD_PINCH"))]
+	#[strum(props(Translation = "APP_SETTINGS.OPTION.HMD_PINCH", Backend = "OpenXR"))]
 	#[default]
 	Hmd,
 	#[strum(props(Translation = "APP_SETTINGS.OPTION.HMD_ONLY"))]

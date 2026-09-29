@@ -1,6 +1,7 @@
 use std::{array, fs::File, io::Write, time::Duration};
 
 use anyhow::bail;
+use glam::{Affine3A, FloatExt, Quat, Vec3};
 use ovr_overlay::{
     TrackedDeviceIndex,
     input::{ActionHandle, ActionSetHandle, ActiveActionSet, InputManager, InputValueHandle},
@@ -11,10 +12,10 @@ use ovr_overlay::{
     },
     system::SystemManager,
 };
-use wlx_common::config_io;
+use wlx_common::{config::HandsfreePointer, config_io};
 
 use crate::{
-    backend::input::{Haptics, TrackedDevice, TrackedDeviceRole},
+    backend::input::{Haptics, Pointer, PointerState, TrackedDevice, TrackedDeviceRole},
     state::AppState,
 };
 
@@ -185,87 +186,169 @@ impl OpenVrInputSource {
         let _ = input.update_actions(&mut [aas_left, aas_right]);
 
         let devices = system.get_device_to_absolute_tracking_pose(universe.clone(), 0.005);
-        if devices[0].bPoseIsValid {
-            app.input_state.hmd = devices[0].mDeviceToAbsoluteTracking.to_affine();
+        let hmd = devices[0].mDeviceToAbsoluteTracking.to_affine();
+        let hmd_tracked = devices[0].bPoseIsValid;
+        if hmd_tracked {
+            app.input_state.hmd = hmd;
         }
 
-        for i in 0..2 {
-            let hand = &mut self.hands[i];
-            let app_hand = &mut app.input_state.pointers[i];
+        let picking_focus = app.input_state.picking_focus;
+        let mut any_tracked = false;
 
-            if let Some(device) = hand.device.filter(|_| !overlay.is_dashboard_visible()) {
-                app_hand.raw_pose = devices[device.0 as usize]
-                    .mDeviceToAbsoluteTracking
-                    .to_affine();
-                app_hand.tracked = devices[device.0 as usize].bPoseIsValid;
-            } else {
-                app_hand.tracked = false;
+        if picking_focus.is_none() {
+            for i in 0..2 {
+                let hand = &mut self.hands[i];
+                let app_hand = &mut app.input_state.pointers[i];
+                app_hand.handsfree = false;
+
+                if let Some(device) = hand.device.filter(|_| !overlay.is_dashboard_visible()) {
+                    app_hand.raw_pose = devices[device.0 as usize]
+                        .mDeviceToAbsoluteTracking
+                        .to_affine();
+                    app_hand.tracked = devices[device.0 as usize].bPoseIsValid;
+                } else {
+                    app_hand.tracked = false;
+                }
+                any_tracked |= app_hand.tracked;
+
+                hand.has_pose = false;
+
+                let _ = input
+                    .get_pose_action_data_relative_to_now(
+                        hand.pose_hnd,
+                        universe.clone(),
+                        0.005,
+                        INPUT_ANY,
+                    )
+                    .map(|pose| {
+                        app_hand.pose = pose.0.pose.mDeviceToAbsoluteTracking.to_affine();
+                        hand.has_pose = true;
+                    });
+
+                app_hand.now.click = input
+                    .get_digital_action_data(self.click_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.grab = input
+                    .get_digital_action_data(self.grab_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.alt_click = input
+                    .get_digital_action_data(self.alt_click_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.show_hide = input
+                    .get_digital_action_data(self.show_hide_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.toggle_dashboard = input
+                    .get_digital_action_data(self.toggle_dashboard_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.space_drag = input
+                    .get_digital_action_data(self.space_drag_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.space_rotate = input
+                    .get_digital_action_data(self.space_rotate_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.space_reset = input
+                    .get_digital_action_data(self.space_reset_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.click_modifier_right = input
+                    .get_digital_action_data(self.click_modifier_right_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.click_modifier_middle = input
+                    .get_digital_action_data(self.click_modifier_middle_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                app_hand.now.move_mouse = input
+                    .get_digital_action_data(self.move_mouse_hnd, hand.input_hnd)
+                    .is_ok_and(|x| x.0.bState);
+
+                let scroll = input
+                    .get_analog_action_data(self.scroll_hnd, hand.input_hnd)
+                    .map_or((0.0, 0.0), |x| (x.0.x, x.0.y));
+                app_hand.now.scroll_x = scroll.0;
+                app_hand.now.scroll_y = scroll.1;
             }
+        } else {
+            app.input_state.handsfree_state.scroll_x =
+                app.input_state.handsfree_state.scroll_x.lerp(0.0, 0.7);
+            app.input_state.handsfree_state.scroll_y =
+                app.input_state.handsfree_state.scroll_y.lerp(0.0, 0.7);
 
-            hand.has_pose = false;
-
-            let _ = input
-                .get_pose_action_data_relative_to_now(
-                    hand.pose_hnd,
-                    universe.clone(),
-                    0.005,
-                    INPUT_ANY,
-                )
-                .map(|pose| {
-                    app_hand.pose = pose.0.pose.mDeviceToAbsoluteTracking.to_affine();
-                    hand.has_pose = true;
-                });
-
-            app_hand.now.click = input
-                .get_digital_action_data(self.click_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.grab = input
-                .get_digital_action_data(self.grab_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.alt_click = input
-                .get_digital_action_data(self.alt_click_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.show_hide = input
-                .get_digital_action_data(self.show_hide_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.toggle_dashboard = input
-                .get_digital_action_data(self.toggle_dashboard_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.space_drag = input
-                .get_digital_action_data(self.space_drag_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.space_rotate = input
-                .get_digital_action_data(self.space_rotate_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.space_reset = input
-                .get_digital_action_data(self.space_reset_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.click_modifier_right = input
-                .get_digital_action_data(self.click_modifier_right_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.click_modifier_middle = input
-                .get_digital_action_data(self.click_modifier_middle_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            app_hand.now.move_mouse = input
-                .get_digital_action_data(self.move_mouse_hnd, hand.input_hnd)
-                .is_ok_and(|x| x.0.bState);
-
-            let scroll = input
-                .get_analog_action_data(self.scroll_hnd, hand.input_hnd)
-                .map_or((0.0, 0.0), |x| (x.0.x, x.0.y));
-            app_hand.now.scroll_x = scroll.0;
-            app_hand.now.scroll_y = scroll.1;
+            for pointer in &mut app.input_state.pointers {
+                pointer.before = pointer.now;
+                pointer.now = PointerState::default();
+                pointer.tracked = false;
+                pointer.handsfree = false;
+            }
         }
+
+        if !picking_focus.is_none() || !any_tracked {
+            let mode: HandsfreePointer = if picking_focus.is_none() {
+                app.session.config.handsfree_pointer
+            } else {
+                app.session.config.handsfree_alt_tab.into()
+            };
+            let handsfree_state = app.input_state.handsfree_state;
+            let delta_time = app.delta_time;
+            let pointer_lerp_factor = app.session.config.pointer_lerp_factor;
+
+            Self::update_handsfree(
+                &mut app.input_state.pointers[0],
+                mode,
+                hmd,
+                hmd_tracked,
+                handsfree_state,
+                delta_time,
+                pointer_lerp_factor,
+            );
+        }
+    }
+
+    fn update_handsfree(
+        pointer: &mut Pointer,
+        mode: HandsfreePointer,
+        hmd: Affine3A,
+        hmd_tracked: bool,
+        handsfree_state: PointerState,
+        delta_time: f32,
+        pointer_lerp_factor: f32,
+    ) {
+        if !matches!(mode, HandsfreePointer::Hmd | HandsfreePointer::HmdOnly) {
+            return;
+        }
+
+        let cur_quat = Quat::from_affine3(&pointer.pose);
+        let cur_pos = Vec3::from(pointer.pose.translation);
+        let new_quat = Quat::from_affine3(&hmd);
+        let new_pos = Vec3::from(hmd.translation);
+        let lerp_factor = (delta_time * 100.0 * pointer_lerp_factor).clamp(0.1, 1.0);
+
+        pointer.raw_pose = hmd;
+        pointer.pose = Affine3A::from_rotation_translation(
+            cur_quat.lerp(new_quat, lerp_factor),
+            cur_pos.lerp(new_pos, lerp_factor),
+        );
+        pointer.tracked = hmd_tracked;
+        pointer.handsfree = hmd_tracked;
+
+        // OpenVR has no pinch action source :(
+        pointer.now = PointerState {
+            click: handsfree_state.click,
+            grab: handsfree_state.grab,
+            grab_float: handsfree_state.grab_float,
+            click_modifier_right: handsfree_state.click_modifier_right,
+            click_modifier_middle: handsfree_state.click_modifier_middle,
+            scroll_x: handsfree_state.scroll_x,
+            scroll_y: handsfree_state.scroll_y,
+            ..PointerState::default()
+        };
     }
 
     pub fn update_devices(&mut self, system: &mut SystemManager, app: &mut AppState) -> bool {

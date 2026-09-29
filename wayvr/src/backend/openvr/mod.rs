@@ -283,7 +283,9 @@ pub fn openvr_run(args: &Args, params: RunParams) -> Result<(), BackendError> {
 
         let haptics = interact(&mut overlays, &mut app, &mut current_lines);
         for (idx, haptics) in haptics.iter().enumerate() {
-            if let Some(haptics) = haptics {
+            if let Some(haptics) = haptics
+                && !app.input_state.pointers[idx].handsfree
+            {
                 input_source.haptics(&mut input_mgr, idx, haptics);
             }
         }

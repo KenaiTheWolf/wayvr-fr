@@ -21,6 +21,13 @@
             },
             {
                "inputs" : [
+                  [ "/user/hand/right/input/bumper", "single" ],
+                  [ "/user/hand/right/input/menu", "single" ]
+               ],
+               "output" : "/actions/default/in/toggledashboard"
+            },
+            {
+               "inputs" : [
                   [ "/user/hand/right/input/grip", "single" ],
                   [ "/user/hand/right/input/menu", "single" ]
                ],

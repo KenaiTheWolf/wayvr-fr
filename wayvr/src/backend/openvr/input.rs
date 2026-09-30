@@ -545,6 +545,18 @@ pub fn set_action_manifest(input: &mut InputManager) -> anyhow::Result<()> {
             .write_all(include_bytes!("../../res/actions_binding_oculus.json"))?;
     }
 
+    let binding_path = config_io::get_config_root().join("actions_binding_frame.json");
+    if !binding_path.is_file() {
+        File::create(&binding_path)?
+            .write_all(include_bytes!("../../res/actions_binding_frame.json"))?;
+    }
+
+    let binding_path = config_io::get_config_root().join("actions_binding_generic_hmd.json");
+    if !binding_path.is_file() {
+        File::create(&binding_path)?
+            .write_all(include_bytes!("../../res/actions_binding_generic_hmd.json"))?;
+    }
+
     if let Err(e) = input.set_action_manifest(action_path.as_path()) {
         bail!("Failed to set action manifest: {e}");
     }

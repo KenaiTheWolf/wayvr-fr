@@ -97,6 +97,10 @@
     {
       "controller_type": "vive_controller",
       "binding_url": "actions_binding_vive.json"
+    },
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "actions_binding_frame.json"
     }
   ],
   "localization": []

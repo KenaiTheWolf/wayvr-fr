@@ -2,7 +2,7 @@
    "action_manifest_version" : 0,
    "app_key" : "wlx-team.wayvr",
    "bindings" : {
-      "/actions/hmd" : {
+      "/actions/default" : {
          "eyetracking": [
             {
               "output": "/actions/default/in/EyeTracking",

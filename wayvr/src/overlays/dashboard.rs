@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use dash_frontend::frontend::{self, FrontendTask, FrontendUpdateParams};
 use glam::{Affine2, Affine3A, Quat, Vec2, vec2, vec3};
 use wayvr_ipc::{
@@ -20,7 +21,7 @@ use wgui::{
     widget::EventResult,
 };
 use wlx_common::{
-    dash_interface::{self, ConfigChangeKind, DashInterface, DashPlayspaceTask},
+    dash_interface::{self, ConfigChangeKind, DashBackendTask, DashInterface, DashPlayspaceTask},
     locale::WayVRLangProvider,
     overlays::{BackendAttrib, BackendAttribValue},
 };
@@ -43,7 +44,7 @@ use crate::{
         },
     },
     config::{none_if_0, save_settings},
-    ipc::ipc_server::{gen_args_vec, gen_env_vec},
+    ipc::ipc_server::gen_env_vec,
     state::AppState,
     subsystem::hid::WheelDelta,
     windowing::{
@@ -331,7 +332,7 @@ fn tutorial_spawn_effect(app: &mut AppState) {
                 realign(&mut transform, hmd, 1.0, app.session.config.snap_angle_deg);
 
                 owc.active_state = Some(OverlayWindowState {
-                    saved_transform: Some(Affine3A::from_translation(vec3(0., -0.1, -0.9))),
+                    saved_transform: Some(Affine3A::from_translation(vec3(0., -0.1, -0.1))),
                     transform,
                     grabbable: true,
                     interactable: true,
@@ -369,7 +370,7 @@ pub fn create_dash_frontend(app: &mut AppState) -> anyhow::Result<OverlayWindowC
     Ok(OverlayWindowConfig {
         name: DASH_NAME.into(),
         default_state: OverlayWindowState {
-            transform: Affine3A::from_translation(vec3(0., 0., -0.9)),
+            transform: Affine3A::from_translation(vec3(0., 0., -0.1)),
             grabbable: true,
             interactable: true,
             positioning: Positioning::Floating,
@@ -391,6 +392,10 @@ impl DashInterfaceLive {
 }
 
 impl DashInterface<AppState> for DashInterfaceLive {
+    fn enumerate_vulkan_devices(&mut self, data: &mut AppState) -> anyhow::Result<Vec<String>> {
+        data.gfx.enumerate_devices()
+    }
+
     fn window_list(&mut self, app: &mut AppState) -> anyhow::Result<Vec<WvrWindow>> {
         let wvr_server = app.wvr_server.as_mut().unwrap();
         Ok(wvr_server
@@ -436,7 +441,11 @@ impl DashInterface<AppState> for DashInterfaceLive {
     ) -> anyhow::Result<WvrProcessHandle> {
         let wvr_server = app.wvr_server.as_mut().unwrap();
 
-        let args_vec = gen_args_vec(&params.args);
+        let mut argv_iter = params.argv.iter().map(String::as_str);
+        let exec_path = argv_iter
+            .next()
+            .context("No executable for process_launch")?;
+        let exec_args = argv_iter.collect::<Box<_>>();
         let env_vec = gen_env_vec(&params.env);
 
         if auto_start {
@@ -447,8 +456,8 @@ impl DashInterface<AppState> for DashInterfaceLive {
         wvr_server
             .spawn_process(
                 &params.name,
-                &params.exec,
-                &args_vec,
+                exec_path,
+                &exec_args,
                 &env_vec,
                 params.resolution,
                 params.pos_mode,
@@ -517,6 +526,20 @@ impl DashInterface<AppState> for DashInterfaceLive {
         Ok(())
     }
 
+    #[allow(unreachable_patterns)]
+    fn backend_task(&mut self, app: &mut AppState, mode: DashBackendTask) -> anyhow::Result<()> {
+        #[cfg(feature = "openvr")]
+        if app.feats.xr_backend.is_open_vr() {
+            use crate::backend::task::OpenVrTask;
+            let task = match mode {
+                DashBackendTask::ShowBindingsUI => OpenVrTask::ShowBindingsUI,
+                _ => return Ok(()),
+            };
+            app.tasks.enqueue(TaskType::OpenVR(task));
+        }
+        Ok(())
+    }
+
     fn desktop_finder<'a>(
         &'a mut self,
         data: &'a mut AppState,
@@ -562,6 +585,10 @@ impl DashInterface<AppState> for DashInterfaceLive {
             }
             _ => {}
         }
+    }
+
+    fn close(&mut self, _data: &mut AppState) {
+        RUNNING.store(false, Ordering::Relaxed);
     }
 
     fn restart(&mut self, _data: &mut AppState) {

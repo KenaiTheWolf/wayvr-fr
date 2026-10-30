@@ -14,7 +14,9 @@ use wgui::{
 	widget::label::WidgetLabel,
 };
 use wlx_common::{
-	config::{AppCompositorMode, AppOrientationMode, AppPosMode, AppResMode, GeneralConfig, PinnedApp},
+	config::{
+		AppCompositorMode, AppOrientationMode, AppPosMode, AppResMode, DefaultPositioning, GeneralConfig, PinnedApp,
+	},
 	dash_interface::BoxDashInterface,
 	desktop_finder::DesktopEntry,
 };
@@ -53,7 +55,7 @@ struct LaunchParams<'a, T> {
 pub struct View {
 	#[allow(dead_code)]
 	state: ParserState,
-	entry: DesktopEntry,
+	entry: Rc<DesktopEntry>,
 	tasks: Tasks<Task>,
 	frontend_tasks: FrontendTasks,
 	globals: WguiGlobals,
@@ -80,7 +82,7 @@ pub struct View {
 
 pub struct Params<'a> {
 	pub globals: &'a WguiGlobals,
-	pub entry: DesktopEntry,
+	pub entry: Rc<DesktopEntry>,
 	pub layout: &'a mut Layout,
 	pub parent_id: WidgetID,
 	pub config: &'a GeneralConfig,
@@ -119,10 +121,8 @@ impl View {
 		{
 			let mut label_exec = state.fetch_widget_as::<WidgetLabel>(&params.layout.state, "label_exec")?;
 
-			label_exec.set_text_simple(
-				&mut params.globals.get(),
-				Translation::from_raw_text_string(format!("{} {}", params.entry.exec_path, params.entry.exec_args)),
-			);
+			let command = shell_words::join(params.entry.exec_argv.iter().map(|x| x.as_ref()));
+			label_exec.set_text_simple(&mut params.globals.get(), Translation::from_raw_text_string(command));
 		}
 
 		let tasks = Tasks::new();
@@ -168,7 +168,12 @@ impl View {
 		// TODO: configurable defaults ?
 		let mut res_mode = AppResMode::Res1080;
 		let mut orientation_mode = AppOrientationMode::Wide;
-		let pos_mode = AppPosMode::Anchored;
+
+		let pos_mode = match params.config.default_positioning {
+			DefaultPositioning::Floating => AppPosMode::Floating,
+			DefaultPositioning::Anchored => AppPosMode::Anchored,
+			DefaultPositioning::Static => AppPosMode::Static,
+		};
 
 		if let Some(pinned_app) = &params.pinned_app {
 			res_mode = pinned_app.res_mode;
@@ -406,14 +411,19 @@ impl View {
 			env.push("ELECTRON_OZONE_PLATFORM_HINT=wayland".into());
 		}
 
-		let args = match params.compositor_mode {
-			AppCompositorMode::Cage => format!("-- {} {}", params.application.exec_path, params.application.exec_args),
-			AppCompositorMode::Native => params.application.exec_args.to_string(),
-		};
-
-		let exec = match params.compositor_mode {
-			AppCompositorMode::Cage => "cage".to_string(),
-			AppCompositorMode::Native => params.application.exec_path.to_string(),
+		let argv = match params.compositor_mode {
+			AppCompositorMode::Cage => ["cage", "--"]
+				.iter()
+				.copied()
+				.chain(params.application.exec_argv.iter().map(|x| x.as_ref()))
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>(),
+			AppCompositorMode::Native => params
+				.application
+				.exec_argv
+				.iter()
+				.map(|x| x.to_string())
+				.collect::<Vec<_>>(),
 		};
 
 		let pos_mode = match params.pos_mode {
@@ -423,7 +433,7 @@ impl View {
 		};
 
 		let mut userdata = HashMap::new();
-		userdata.insert("desktop-entry".to_string(), serde_json::to_string(params.application)?);
+		userdata.insert("desktop-entry".into(), serde_json::to_string(params.application)?);
 
 		let resolution = Self::calculate_resolution(params.res_mode, params.orientation_mode);
 
@@ -432,12 +442,11 @@ impl View {
 			params.auto_start,
 			WvrProcessLaunchParams {
 				env,
-				exec,
+				argv,
 				name: params.application.app_name.to_string(),
-				args,
 				resolution,
 				pos_mode,
-				icon: params.application.icon_path.as_ref().map(|x| x.as_ref().to_string()),
+				icon: params.application.icon_path.as_deref().map(String::from),
 				userdata,
 			},
 		)?;
@@ -486,7 +495,7 @@ impl View {
 pub fn mount_popup(
 	frontend_tasks: FrontendTasks,
 	globals: WguiGlobals,
-	entry: DesktopEntry,
+	entry: Rc<DesktopEntry>,
 	popup: PopupHolder<View>,
 	on_app_pins_changed: Box<dyn Fn()>,
 	pinned_app: Option<PinnedApp>,

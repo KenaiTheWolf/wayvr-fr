@@ -374,11 +374,15 @@ impl ParserState {
 		'children: for child in el_context_menu.children() {
 			match child.tag_name().name() {
 				"" => {}
+				"separator" => {
+					cells.push(context_menu::Cell::Separator);
+				}
 				"cell" => {
 					let mut title: Option<Translation> = None;
 					let mut tooltip: Option<Translation> = None;
 					let mut action_name: Option<Rc<str>> = None;
 					let mut attribs = Vec::<AttribPair>::new();
+					let mut sprite_src_builtin: Option<Rc<str>> = None;
 
 					for attrib in child.attributes() {
 						let (key, value) = (attrib.name(), attrib.value());
@@ -389,6 +393,7 @@ impl ParserState {
 							"tooltip" => tooltip = Some(Translation::from_translation_key(value)),
 							"tooltip_str" => tooltip = Some(Translation::from_raw_text(value)),
 							"action" => action_name = Some(value.into()),
+							"sprite_src_builtin" => sprite_src_builtin = Some(value.into()),
 							"skip" => {
 								let resolved = replace_vars(value, template_params);
 								//FIXME: this is always empty
@@ -406,12 +411,13 @@ impl ParserState {
 					}
 
 					let title = title.context("No text/translation provided")?;
-					cells.push(context_menu::Cell {
+					cells.push(context_menu::Cell::Button(context_menu::Button {
 						title,
 						tooltip,
 						action_name,
+						sprite_src_builtin,
 						attribs,
-					});
+					}));
 				}
 				other => {
 					anyhow::bail!("{:?}: unexpected <{other}> tag", self.xml_path.get_path().display());
@@ -820,18 +826,30 @@ fn expand_path_from_kv(file: &ParserFile, attrib: &str, value: &str) -> AssetPat
 	match attrib {
 		"src_internal" => AssetPathRc::WguiInternal(expand_path(&par, AssetPathSource::Internal, value).into()),
 		"src_builtin" => AssetPathRc::BuiltIn(expand_path(&par, AssetPathSource::BuiltIn, value).into()),
-		"src" => AssetPathRc::FileOrBuiltIn(
-			expand_path(
-				&par,
-				if file.xml_path_source == AssetPathSource::Filesystem {
-					AssetPathSource::Filesystem // use filesystem for src="..." if the xml file resides on the filesystem too
+		"src" => {
+			// for filesystem paths, '@' expands to the xml document root dir
+			// calculate fallback in case if the filesystem expanded path doesn't exist
+			let fallback =
+				if file.version.0 >= 2 && file.xml_path_source == AssetPathSource::Filesystem && value.starts_with('@') {
+					Some(Rc::from(expand_path(&par, AssetPathSource::BuiltIn, value).as_path()))
 				} else {
-					AssetPathSource::BuiltIn // use builtin
-				},
-				value,
-			)
-			.into(),
-		),
+					None
+				};
+
+			AssetPathRc::FileOrBuiltIn {
+				path: expand_path(
+					&par,
+					if file.xml_path_source == AssetPathSource::Filesystem {
+						AssetPathSource::Filesystem // use filesystem for src="..." if the xml file resides on the filesystem too
+					} else {
+						AssetPathSource::BuiltIn // use builtin
+					},
+					value,
+				)
+				.into(),
+				fallback,
+			}
+		}
 		"src_ext" => AssetPathRc::File(expand_path(&par, AssetPathSource::Filesystem, value).into()),
 		_ => unreachable!(),
 	}

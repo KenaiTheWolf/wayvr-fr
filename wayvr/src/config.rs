@@ -9,9 +9,9 @@ use wayvr_ipc::packet_client::WvrProcessLaunchParams;
 use wlx_common::{
     astr_containers::AStrMap,
     config::{
-        AltModifier, CaptureMethod, ChromaKeyParams, DefaultPositioning, GeneralConfig,
-        HandsfreeAltTab, HandsfreePointer, InputCaptureMethod, InputEmulationMethod, PinnedApp,
-        SerializedWindowSet,
+        AltModifier, CONFIG_VERSION, CaptureMethod, ChromaKeyParams, DefaultPositioning,
+        GeneralConfig, HandsfreeAltTab, HandsfreePointer, InputCaptureMethod, InputEmulationMethod,
+        PinnedApp, SerializedWindowSet,
     },
     config_io,
     locale::Language,
@@ -189,6 +189,7 @@ pub struct AutoSettings {
     pub input_emulation_method: InputEmulationMethod,
     pub tutorial_graduated: bool,
     pub whisper_model: Arc<str>,
+    pub whisper_gpu: u32,
     pub default_overlay_scale: f32,
     pub color_palette: Arc<str>,
     pub snap_angle_deg: f32,
@@ -199,6 +200,7 @@ pub struct AutoSettings {
     pub default_opacity: f32,
     pub default_positioning: DefaultPositioning,
     pub middle_grabs_single: bool,
+    pub config_version: u32,
 }
 
 fn get_settings_path() -> PathBuf {
@@ -265,6 +267,7 @@ pub fn save_settings(config: &GeneralConfig) -> anyhow::Result<()> {
         input_emulation_method: config.input_emulation_method,
         tutorial_graduated: config.tutorial_graduated,
         whisper_model: config.whisper_model.clone(),
+        whisper_gpu: config.whisper_gpu,
         default_overlay_scale: config.default_overlay_scale,
         color_palette: config.color_palette.clone(),
         snap_angle_deg: config.snap_angle_deg,
@@ -275,6 +278,7 @@ pub fn save_settings(config: &GeneralConfig) -> anyhow::Result<()> {
         default_opacity: config.default_opacity,
         default_positioning: config.default_positioning,
         middle_grabs_single: config.middle_grabs_single,
+        config_version: CONFIG_VERSION,
     };
 
     let json = serde_json::to_string_pretty(&conf).unwrap(); // want panic
@@ -292,6 +296,7 @@ pub struct AutoState {
     pub spawn_overlays: Vec<Arc<str>>,
     pub last_set: u32,
     pub attribs: AStrMap<Vec<BackendAttribValue>>,
+    pub state_version: u32,
 }
 
 fn get_state_path() -> PathBuf {
@@ -306,6 +311,7 @@ pub fn save_state(config: &GeneralConfig) -> anyhow::Result<()> {
         last_set: config.last_set,
         spawn_overlays: config.spawn_overlays.clone(),
         attribs: config.attribs.clone(),
+        state_version: CONFIG_VERSION,
     };
 
     let json = serde_json::to_string_pretty(&conf).unwrap(); // want panic

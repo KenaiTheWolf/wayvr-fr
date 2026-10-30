@@ -43,14 +43,14 @@
 		"MOVE_PRESS_AND_DRAG": "Sposta (premi e trascina)",
 		"OPACITY": "Opacità",
 		"POS_ANCHORED": "Ancorato: Si muove insieme al set. Predefinito.",
-		"POS_FLOATING": "Fluttuante: si muove indipendentemente, si ricentra quando appare.",
 		"POS_HAND_L": "Segui la mano sinistra.",
 		"POS_HAND_R": "Segui la mano destra.",
 		"POS_HMD": "Segue l'HMD.",
 		"POS_STATIC": "Statico: non fa parte di alcun set, nessun ricentramento.",
 		"POSITIONING": "Posizionamento",
 		"RESIZE_PRESS_AND_DRAG": "Ridimensiona (premi e trascina)",
-		"RESIZE_CORNER": "Trascina per ridimensionare"
+		"RESIZE_CORNER": "Trascina per ridimensionare",
+		"POS_FLOATING": "Fluttuante: si muove indipendentemente, salva con l'ancora."
 	},
 	"DEFINITIONS": {
 		"ANCHORED": "Ancorato",
@@ -143,7 +143,11 @@
 		"NO_SET_SELECTED": "Nessun set selezionato.",
 		"ONE_CONTROLLER_ON_FLOOR": "Appoggia un controller sul pavimento!",
 		"NO_KEYMAPS_CONFIGURED": "Nessuna disposizione tastiera configurata",
-		"NO_KEYMAPS_CONFIGURED_HELP": "Consulta wayvr.org per configurare i layout della tastiera!"
+		"NO_KEYMAPS_CONFIGURED_HELP": "Consulta wayvr.org per configurare i layout della tastiera!",
+		"STEAMVR_DASH_TITLE": "Dashboard SteamVR Aperta",
+		"STEAMVR_DASH_TEXT": "Chiudi il pannello di SteamVR per iniziare a usare WayVR.",
+		"WAYVR_RUNNING_TITLE": "WayVR è attivo!",
+		"WAYVR_RUNNING_TEXT": "Controlla il polso per l'orologio, o usa il comando show-hide per iniziare!"
 	},
 	"WATCH": {
 		"ADD_NEW_SET": "Aggiungi un nuovo set",

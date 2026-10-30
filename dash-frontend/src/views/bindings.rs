@@ -3,17 +3,13 @@ use std::rc::Rc;
 use strum::EnumProperty;
 use wgui::{
 	assets::AssetPathRef,
-	components::{
-		button::{ButtonClickEvent, ComponentButton},
-		slider::ComponentSlider,
-	},
+	components::{button::ComponentButton, slider::ComponentSlider},
 	globals::WguiGlobals,
 	i18n::Translation,
 	layout::{Layout, WidgetID},
 	log::LogErr,
 	parser::{Fetchable, ParseDocumentParams, ParserState, TemplateParams},
 	task::Tasks,
-	widget::label::WidgetLabel,
 	windowing::context_menu::{self, TickResult},
 };
 use wlx_common::{
@@ -39,7 +35,7 @@ use crate::{
 enum Task {
 	Save,
 	Cancel,
-	OpenContextMenu(glam::Vec2, Vec<context_menu::Cell>),
+	OpenContextMenu(context_menu::Position, Vec<context_menu::Cell>),
 	UpdateThreshold(Rc<str>, XrInputSide, usize, f32),
 	AddChordMember(Rc<str>, XrInputSide),
 	RemoveChordMember(Rc<str>, XrInputSide, usize),
@@ -162,6 +158,7 @@ impl ViewTrait for View {
 						"subpath" => {
 							apply_subpath(
 								action_binding_mut(action_mut, side),
+								action_name,
 								side,
 								value,
 								self.controller_profile,
@@ -617,7 +614,7 @@ fn chord_member_controls(
 		output_side,
 		member_idx,
 		available_components,
-		parsed.as_ref().map(|x| x.component),
+		parsed.and_then(|x| x.component),
 	)?;
 
 	let tasks = mp.tasks.clone();
@@ -638,7 +635,7 @@ fn chord_member_controls(
 	})?;
 
 	// put threshold slider on its own row
-	if parsed.as_ref().is_some_and(|x| x.component.is_analog()) {
+	if parsed.and_then(|x| x.component).is_some_and(|x| x.is_analog()) {
 		chord_threshold_slider(mp, parent, action.clone(), output_side, member_idx, member.threshold())?;
 	}
 
@@ -666,13 +663,6 @@ fn input_controls_for_hand(mp: &mut MacroParams, par: InputControlsForHandParams
 
 	let parent = horiz_cell(mp.layout, par.parent)?;
 
-	let available_components: Rc<[XrInputComponent]> = current
-		.as_ref()
-		.and_then(|par| user_path.find_subpath(par.subpath))
-		.map(|subp| subp.components)
-		.unwrap_or_default()
-		.into();
-
 	let available_subpaths: Rc<[XrInputSubpathKind]> = user_path
 		.paths
 		.iter()
@@ -689,23 +679,33 @@ fn input_controls_for_hand(mp: &mut MacroParams, par: InputControlsForHandParams
 		current.as_ref().map(|x| x.subpath),
 	)?;
 
+	if &**par.action == "scroll" {
+		clicks_dropdown(mp, parent, par.action.clone(), par.click_type)?;
+		return Ok(());
+	}
+
+	let available_components: Rc<[XrInputComponent]> = current
+		.as_ref()
+		.and_then(|par| user_path.find_subpath(par.subpath))
+		.map(|subp| subp.components)
+		.unwrap_or_default()
+		.into();
+
 	if !component_dropdown(
 		mp,
 		parent,
 		par.action.clone(),
 		par.side,
 		available_components,
-		current.as_ref().map(|x| x.component),
+		current.and_then(|x| x.component),
 	)? {
 		return Ok(());
 	}
 
 	clicks_dropdown(mp, parent, par.action.clone(), par.click_type)?;
 
-	if let Some(component) = current.as_ref().map(|x| x.component)
+	if let Some(component) = current.and_then(|x| x.component)
 		&& component.is_analog()
-		&& &**par.action != "scroll"
-	// hax
 	{
 		threshold_slider(mp, parent, par.action.clone(), par.side, par.threshold)?;
 	}
@@ -804,20 +804,21 @@ fn chord_hand_dropdown(
 	let cells = [XrInputSide::Left, XrInputSide::Right]
 		.into_iter()
 		.filter(|side| profile.find_userpath(*side).is_some())
-		.map(|side| context_menu::Cell {
-			action_name: Some(
-				format!(
-					"chord_hand;{};{};{};{}",
-					action,
-					output_side.as_ref(),
-					member_idx,
-					side.as_ref()
-				)
-				.into(),
-			),
-			title: side_translation(side),
-			tooltip: None,
-			attribs: vec![],
+		.map(|side| {
+			context_menu::Cell::Button(context_menu::Button {
+				action_name: Some(
+					format!(
+						"chord_hand;{};{};{};{}",
+						action,
+						output_side.as_ref(),
+						member_idx,
+						side.as_ref()
+					)
+					.into(),
+				),
+				title: side_translation(side),
+				..Default::default()
+			})
 		})
 		.collect();
 
@@ -842,20 +843,21 @@ fn chord_subpath_dropdown(
 		.unwrap_or_else(|| Translation::from_translation_key("APP_SETTINGS.OPTION.NONE"));
 	let cells = available
 		.iter()
-		.map(|subpath| context_menu::Cell {
-			action_name: Some(
-				format!(
-					"chord_subpath;{};{};{};{}",
-					action,
-					output_side.as_ref(),
-					member_idx,
-					subpath.as_ref()
-				)
-				.into(),
-			),
-			title: subpath.translation(),
-			tooltip: None,
-			attribs: vec![],
+		.map(|subpath| {
+			context_menu::Cell::Button(context_menu::Button {
+				action_name: Some(
+					format!(
+						"chord_subpath;{};{};{};{}",
+						action,
+						output_side.as_ref(),
+						member_idx,
+						subpath.as_ref()
+					)
+					.into(),
+				),
+				title: subpath.translation(),
+				..Default::default()
+			})
 		})
 		.collect();
 
@@ -885,20 +887,21 @@ fn chord_component_dropdown(
 		.unwrap_or_else(|| Translation::from_raw_text_rc(Default::default()));
 	let cells = available
 		.iter()
-		.map(|component| context_menu::Cell {
-			action_name: Some(
-				format!(
-					"chord_comp;{};{};{};{}",
-					action,
-					output_side.as_ref(),
-					member_idx,
-					component.as_ref()
-				)
-				.into(),
-			),
-			title: component.translation(),
-			tooltip: None,
-			attribs: vec![],
+		.map(|component| {
+			context_menu::Cell::Button(context_menu::Button {
+				action_name: Some(
+					format!(
+						"chord_comp;{};{};{};{}",
+						action,
+						output_side.as_ref(),
+						member_idx,
+						component.as_ref()
+					)
+					.into(),
+				),
+				title: component.translation(),
+				..Default::default()
+			})
 		})
 		.collect();
 
@@ -1003,23 +1006,23 @@ fn create_dropdown<B: 'static + BindingsDropdown>(
 ) -> anyhow::Result<()> {
 	let mut cells = available
 		.iter()
-		.map(|item| context_menu::Cell {
-			action_name: Some(item.action_str(&action, side)),
-			title: item.translation(),
-			tooltip: None,
-			attribs: vec![],
+		.map(|item| {
+			context_menu::Cell::Button(context_menu::Button {
+				action_name: Some(item.action_str(&action, side)),
+				title: item.translation(),
+				..Default::default()
+			})
 		})
 		.collect::<Vec<_>>();
 
 	if let Some(action_str) = B::clear_str(&action, side) {
 		cells.insert(
 			0,
-			context_menu::Cell {
+			context_menu::Cell::Button(context_menu::Button {
 				action_name: Some(action_str),
 				title: Translation::from_translation_key("APP_SETTINGS.OPTION.NONE"),
-				tooltip: None,
-				attribs: vec![],
-			},
+				..Default::default()
+			}),
 		);
 	}
 
@@ -1029,42 +1032,29 @@ fn create_dropdown<B: 'static + BindingsDropdown>(
 fn create_dropdown_with_cells(
 	mp: &mut MacroParams,
 	parent: WidgetID,
-	mut params: TemplateParams,
+	params: TemplateParams,
 	current_text: Translation,
 	cells: Vec<context_menu::Cell>,
 ) -> anyhow::Result<()> {
 	let id = mp.idx.to_string();
 	mp.idx += 1;
-	params.insert("id", &id);
-
-	mp.parser_state
-		.instantiate_template(mp.doc_params, "DropdownButton", mp.layout, parent, params)?;
-
-	{
-		let mut label = mp
-			.parser_state
-			.fetch_widget_as::<WidgetLabel>(&mp.layout.state, &format!("{id}_value"))?;
-		label.set_text_simple(&mut mp.layout.state.globals.get(), current_text);
-	}
-
-	let btn = mp.parser_state.fetch_component_as::<ComponentButton>(&id)?;
-	btn.on_click(Rc::new({
-		let tasks = mp.tasks.clone();
-		let cells = cells.clone();
-		move |_common, e: ButtonClickEvent| {
-			tasks.push(Task::OpenContextMenu(
-				e.mouse_pos_absolute.unwrap_or_default(),
-				cells.clone(),
-			));
-			Ok(())
-		}
-	}));
-
-	Ok(())
+	let tasks = mp.tasks.clone();
+	wgui_simple::mount_dropdown(wgui_simple::MountDropdownParams {
+		layout: mp.layout,
+		parser_state: mp.parser_state,
+		doc_params: mp.doc_params,
+		parent,
+		id,
+		params,
+		current_text,
+		cells,
+		on_open: Box::new(move |pos, cells| tasks.push(Task::OpenContextMenu(pos, cells))),
+	})
 }
 
 fn apply_subpath(
 	side_mut: &mut Option<OneOrMany<String>>,
+	action_name: &str,
 	side_str: &str,
 	subpath_str: &str,
 	profile: &XrControllerProfile,
@@ -1075,6 +1065,12 @@ fn apply_subpath(
 	) else {
 		return;
 	};
+
+	if action_name == "scroll" {
+		*side_mut = Some(OneOrMany::One(format!("/user/hand/{side_str}/input/{subpath_str}")));
+		return;
+	}
+
 	let Some(subpath_obj) = profile.find_userpath(side).and_then(|p| p.find_subpath(subpath)) else {
 		return;
 	};
@@ -1087,11 +1083,12 @@ fn apply_subpath(
 			return;
 		};
 
-		let mut parsed_compo = parsed.component;
-		if !subpath_obj.components.contains(&parsed_compo) {
-			parsed_compo = *subpath_obj.components.first().unwrap();
+		let parsed_compo = parsed.component.unwrap_or(*subpath_obj.components.first().unwrap());
+		if subpath_obj.components.contains(&parsed_compo) {
+			parsed_compo
+		} else {
+			*subpath_obj.components.first().unwrap()
 		}
-		parsed_compo
 	} else {
 		*subpath_obj.components.first().unwrap()
 	};
@@ -1226,7 +1223,7 @@ fn apply_chord_hand(member: &mut OpenXrInputChordMember, side: XrInputSide, prof
 	};
 
 	let component = parsed
-		.map(|parsed| parsed.component)
+		.and_then(|parsed| parsed.component)
 		.filter(|component| subpath.components.contains(component))
 		.unwrap_or(subpath.components[0]);
 	let path = format!(
@@ -1256,8 +1253,12 @@ fn apply_chord_subpath(
 		return;
 	};
 
-	let component = if subpath_obj.components.contains(&parsed.component) {
-		parsed.component
+	let component = if let Some(comp) = parsed.component {
+		if subpath_obj.components.contains(&comp) {
+			comp
+		} else {
+			first_component
+		}
 	} else {
 		first_component
 	};

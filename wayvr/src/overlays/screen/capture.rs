@@ -8,12 +8,12 @@ use glam::Affine3A;
 use smallvec::{SmallVec, smallvec};
 use wgui::{
     gfx::{
-        Buffer, BufferUsage, CommandBufferUsage, Filter, Format, Image, ImageView, Scissor,
-        Vert2Uv, WGfx,
+        AttachmentBlend, BlendFactor, BlendOp, Buffer, BufferUsage, CommandBufferUsage, Filter,
+        Format, Image, ImageView, Scissor, Vert2Uv, WGfx,
         cmd::WGfxClearMode,
         pass::WGfxPass,
         pipeline::{WGfxPipeline, WPipelineCreateInfo},
-        upload_quad_vertices,
+        upload_quad_vertices_uv,
     },
     log::LogErr,
 };
@@ -29,16 +29,41 @@ use crate::{
     windowing::backend::{FrameMeta, RenderResources},
 };
 
-const CURSOR_SIZE: f32 = 16. / 1440.;
+const CURSOR_SIZE: f32 = 64. / 1440.;
+
+// synchronize queue shared by the WlxCapture worker threads
+static CAPTURE_QUEUE_MUTEX: Mutex<()> = Mutex::new(());
 
 struct BufPass {
     pass: WGfxPass<Vert2Uv>,
     buf_vert: Arc<Buffer<Vert2Uv>>,
 }
 
+pub struct CursorSurface {
+    pub image: Arc<ImageView>,
+    pub source_size: [f32; 2],
+    pub size: [f32; 2],
+    pub hotspot: [f32; 2],
+    pub source_uv: [f32; 4],
+    pub transform: wlx_frame::Transform,
+}
+
+impl CursorSurface {
+    pub fn same_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.image, &other.image)
+            && self.source_size.map(f32::to_bits) == other.source_size.map(f32::to_bits)
+            && self.size.map(f32::to_bits) == other.size.map(f32::to_bits)
+            && self.hotspot.map(f32::to_bits) == other.hotspot.map(f32::to_bits)
+            && self.source_uv.map(f32::to_bits) == other.source_uv.map(f32::to_bits)
+            && self.transform == other.transform
+    }
+}
+
 /// A render pipeline that supports mouse + stereo
 pub struct ScreenPipeline {
     mouse: BufPass,
+    mouse_pipeline: Arc<WGfxPipeline<Vert2Uv>>,
+    default_cursor_image: Arc<ImageView>,
     pass: SmallVec<[BufPass; 2]>,
     pipeline: Arc<WGfxPipeline<Vert2Uv>>,
     extentf: [f32; 2],
@@ -107,6 +132,22 @@ impl ScreenPipeline {
         cmd_xfer.build_and_execute_now()?;
         let fallback_image = app.gfx.create_image_view(fallback_image)?;
 
+        let mouse_pipeline = app.gfx.create_pipeline(
+            app.gfx_extras.shaders.get("vert_quad").unwrap(),
+            app.gfx_extras.shaders.get("frag_wayland").unwrap(),
+            WPipelineCreateInfo::new(app.gfx.surface_format())
+                .use_updatable_descriptors([0])
+                .use_blend(AttachmentBlend {
+                    src_color_blend_factor: BlendFactor::One,
+                    dst_color_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                    color_blend_op: BlendOp::Add,
+                    src_alpha_blend_factor: BlendFactor::One,
+                    dst_alpha_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                    alpha_blend_op: BlendOp::Add,
+                }),
+        )?;
+        let (mouse, default_cursor_image) =
+            Self::create_mouse_pass(app, mouse_pipeline.clone(), extentf, offsetf)?;
         let mut me = Self {
             pass: smallvec![Self::create_pass(
                 app,
@@ -115,7 +156,9 @@ impl ScreenPipeline {
                 extentf,
                 offsetf,
             )?],
-            mouse: Self::create_mouse_pass(app, pipeline.clone(), extentf, offsetf)?,
+            mouse,
+            mouse_pipeline,
+            default_cursor_image,
             pipeline,
             extentf,
             offsetf,
@@ -144,6 +187,7 @@ impl ScreenPipeline {
 
     /// Select normalized rect from backing image
     pub fn set_source_uv(&mut self, source_uv: [f32; 4]) {
+        #[allow(clippy::float_cmp)]
         if self.source_uv != source_uv {
             self.source_uv = source_uv;
             self.pass.clear();
@@ -193,7 +237,8 @@ impl ScreenPipeline {
         self.transform = transform;
         self.pass.clear();
 
-        self.mouse = Self::create_mouse_pass(app, self.pipeline.clone(), extentf, offsetf)?;
+        (self.mouse, self.default_cursor_image) =
+            Self::create_mouse_pass(app, self.mouse_pipeline.clone(), extentf, offsetf)?;
         Ok(())
     }
 
@@ -227,20 +272,20 @@ impl ScreenPipeline {
         pipeline: Arc<WGfxPipeline<Vert2Uv>>,
         extentf: [f32; 2],
         offsetf: [f32; 2],
-    ) -> anyhow::Result<BufPass> {
-        #[rustfmt::skip]
-        let mouse_bytes = [
-            0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,
-            0x00, 0x00, 0x00, 0xff,  0xff, 0xff, 0xff, 0xff,  0xff, 0xff, 0xff, 0xff,  0x00, 0x00, 0x00, 0xff,
-            0x00, 0x00, 0x00, 0xff,  0xff, 0xff, 0xff, 0xff,  0xff, 0xff, 0xff, 0xff,  0x00, 0x00, 0x00, 0xff,
-            0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,  0x00, 0x00, 0x00, 0xff,
-        ];
+    ) -> anyhow::Result<(BufPass, Arc<ImageView>)> {
+        let cursor =
+            image::load_from_memory(include_bytes!("../../res/default_cursor.png"))?.to_rgba8();
 
         let mut cmd_xfer = app
             .gfx
             .create_xfer_command_buffer(CommandBufferUsage::OneTimeSubmit)?;
 
-        let image = cmd_xfer.upload_image(4, 4, Format::R8G8B8A8_UNORM, &mouse_bytes)?;
+        let image = cmd_xfer.upload_image(
+            cursor.width(),
+            cursor.height(),
+            Format::R8G8B8A8_UNORM,
+            cursor.as_raw(),
+        )?;
 
         let view = app.gfx.create_image_view(image)?;
 
@@ -248,7 +293,7 @@ impl ScreenPipeline {
             .gfx
             .empty_buffer(BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER, 4)?;
 
-        let set0 = pipeline.uniform_sampler(0, view, Filter::Nearest)?;
+        let set0 = pipeline.uniform_sampler(0, view.clone(), Filter::Nearest)?;
         let pass = pipeline.create_pass(
             extentf,
             offsetf,
@@ -260,7 +305,7 @@ impl ScreenPipeline {
         )?;
 
         cmd_xfer.build_and_execute_now()?;
-        Ok(BufPass { pass, buf_vert })
+        Ok((BufPass { pass, buf_vert }, view))
     }
 
     pub fn render(
@@ -272,7 +317,7 @@ impl ScreenPipeline {
     ) -> anyhow::Result<()> {
         self.render_screen(image, app, rdr)?;
         if let Some(mouse) = mouse {
-            self.render_mouse(mouse, rdr)?;
+            self.render_mouse(mouse, rdr, None)?;
         }
         Ok(())
     }
@@ -302,31 +347,70 @@ impl ScreenPipeline {
         &mut self,
         mouse: &MouseMeta,
         rdr: &mut RenderResources,
+        cursor: Option<&CursorSurface>,
     ) -> anyhow::Result<()> {
-        for cmd_buf in &mut rdr.cmd_bufs {
-            let size = CURSOR_SIZE * self.extentf[1];
-            let half_size = size * 0.5;
+        let image = cursor.map_or(&self.default_cursor_image, |cursor| &cursor.image);
+        self.mouse
+            .pass
+            .update_sampler(0, image.clone(), Filter::Nearest)?;
 
-            let (x_scale, y_scale) = if self.stereo_adjust_mouse {
-                match self.stereo {
-                    StereoMode::LeftRight | StereoMode::RightLeft => (2.0, 1.0),
-                    StereoMode::TopBottom | StereoMode::BottomTop => (1.0, 2.0),
-                    _ => (1.0, 1.0),
-                }
+        let size = CURSOR_SIZE * self.extentf[1];
+        let (width, height, hotspot_x, hotspot_y, source_uv, transform) =
+            if let Some(cursor) = cursor {
+                let scale = size
+                    / cursor.source_size[0]
+                        .max(cursor.source_size[1])
+                        .max(f32::EPSILON);
+                (
+                    cursor.size[0] * scale,
+                    cursor.size[1] * scale,
+                    cursor.hotspot[0] * scale,
+                    cursor.hotspot[1] * scale,
+                    cursor.source_uv,
+                    cursor.transform,
+                )
             } else {
-                (1.0, 1.0)
+                (
+                    size,
+                    size,
+                    0.0,
+                    0.0,
+                    [0.0, 0.0, 1.0, 1.0],
+                    wlx_frame::Transform::Normal,
+                )
             };
 
-            upload_quad_vertices(
-                &self.mouse.buf_vert,
-                self.extentf[0],
-                self.extentf[1],
-                mouse.x.mul_add(self.extentf[0] * x_scale, -half_size),
-                mouse.y.mul_add(self.extentf[1] * y_scale, -half_size),
-                size,
-                size,
-            )?;
+        let (x_scale, y_scale) = if self.stereo_adjust_mouse {
+            match self.stereo {
+                StereoMode::LeftRight | StereoMode::RightLeft => (2.0, 1.0),
+                StereoMode::TopBottom | StereoMode::BottomTop => (1.0, 2.0),
+                _ => (1.0, 1.0),
+            }
+        } else {
+            (1.0, 1.0)
+        };
 
+        upload_quad_vertices_uv(
+            &self.mouse.buf_vert,
+            self.extentf[0],
+            self.extentf[1],
+            mouse.x.mul_add(self.extentf[0] * x_scale, -hotspot_x),
+            mouse.y.mul_add(self.extentf[1] * y_scale, -hotspot_y),
+            width,
+            height,
+            source_uv,
+        )?;
+        if !matches!(
+            transform,
+            wlx_frame::Transform::Normal | wlx_frame::Transform::Undefined
+        ) {
+            let mut vertices = self.mouse.buf_vert.write()?;
+            for vertex in &mut vertices[..4] {
+                vertex.in_uv = transform_uv(vertex.in_uv, transform);
+            }
+        }
+
+        for cmd_buf in &mut rdr.cmd_bufs {
             cmd_buf.run_ref(&self.mouse.pass)?;
         }
 
@@ -665,6 +749,17 @@ fn upload_image(
     format: Format,
     data: &[u8],
 ) -> Option<Arc<Image>> {
+    upload_image_with_row_length(me, width, height, format, data, 0)
+}
+
+fn upload_image_with_row_length(
+    me: &WlxCaptureIn,
+    width: u32,
+    height: u32,
+    format: Format,
+    data: &[u8],
+    buffer_row_length: u32,
+) -> Option<Arc<Image>> {
     let cmd_result = if me.use_capture_queue {
         me.gfx
             .create_capture_command_buffer(CommandBufferUsage::OneTimeSubmit)
@@ -679,15 +774,23 @@ fn upload_image(
             return None;
         }
     };
-    let image = match cmd_xfer.upload_image(width, height, format, data) {
-        Ok(x) => x,
-        Err(e) => {
-            log::error!("{}: Could not create vkImage: {:?}", me.name, e);
-            return None;
-        }
-    };
+    let image =
+        match cmd_xfer.upload_image_with_row_length(width, height, format, data, buffer_row_length)
+        {
+            Ok(x) => x,
+            Err(e) => {
+                log::error!("{}: Could not create vkImage: {:?}", me.name, e);
+                return None;
+            }
+        };
 
-    if let Err(e) = cmd_xfer.build_and_execute_now() {
+    let result = if me.use_capture_queue {
+        let _guard = CAPTURE_QUEUE_MUTEX.lock().unwrap(); // mutex poison only
+        cmd_xfer.build_and_execute_now()
+    } else {
+        cmd_xfer.build_and_execute_now()
+    };
+    if let Err(e) = result {
         log::error!("{}: Could not execute upload: {:?}", me.name, e);
         return None;
     }
@@ -757,8 +860,22 @@ pub(super) fn receive_callback(me: &WlxCaptureIn, frame: WlxFrame) -> Option<Wlx
                 }
             };
 
-            let data = unsafe { std::slice::from_raw_parts(frame.ptr as *const u8, frame.size) };
-            let image = upload_image(me, frame.format.width, frame.format.height, format, data)?;
+            // SAFETY: the MemPtr params & allocation and must be valid and must outlive the callback
+            let pixels = unsafe {
+                std::slice::from_raw_parts(
+                    (frame.ptr as *const u8).add(frame.offset),
+                    frame.size - frame.offset,
+                )
+            };
+            let buffer_row_length = (frame.stride / 4) as u32;
+            let image = upload_image_with_row_length(
+                me,
+                frame.format.width,
+                frame.format.height,
+                format,
+                pixels,
+                buffer_row_length,
+            )?;
 
             Some(WlxCaptureOut {
                 image: me.gfx.create_image_view(image).ok()?,
@@ -811,6 +928,8 @@ pub(super) enum MainThreadFrame {
     Cpu {
         format: FrameFormat,
         data: Vec<u8>,
+        offset: usize,
+        stride: usize,
         mouse: Option<MouseMeta>,
     },
     Dmabuf {
@@ -870,12 +989,16 @@ where
             MainThreadFrame::Cpu {
                 format,
                 data,
+                offset,
+                stride,
                 mouse,
             } => {
                 let frame = wlx_frame::MemPtrFrame {
                     format,
                     ptr: data.as_ptr() as usize,
                     size: data.len(),
+                    offset,
+                    stride,
                     mouse,
                 };
                 receive_callback(
@@ -910,22 +1033,24 @@ fn receive_callback_dummy(_: &DmaExporterProxy, frame: WlxFrame) -> Option<MainT
             Some(MainThreadFrame::Cpu {
                 format: frame.format,
                 data: map.as_slice().to_vec(),
+                offset: frame.plane.offset as _,
+                stride: (frame.format.width as usize).checked_mul(4)?,
                 mouse: frame.mouse,
             })
         }
         WlxFrame::MemPtr(frame) => {
-            let data = if frame.size == 0 {
-                Vec::new()
-            } else {
-                if frame.ptr == 0 {
-                    log::error!("Main-thread CPU capture received a null MemPtr frame");
-                    return None;
-                }
-                unsafe { std::slice::from_raw_parts(frame.ptr as *const u8, frame.size) }.to_vec()
+            // SAFETY: Allocation must be valid & must outlive the callback
+            let pixels = unsafe {
+                std::slice::from_raw_parts(
+                    (frame.ptr as *const u8).add(frame.offset),
+                    frame.size - frame.offset,
+                )
             };
             Some(MainThreadFrame::Cpu {
                 format: frame.format,
-                data,
+                data: pixels.to_vec(),
+                offset: frame.offset,
+                stride: frame.stride,
                 mouse: frame.mouse,
             })
         }

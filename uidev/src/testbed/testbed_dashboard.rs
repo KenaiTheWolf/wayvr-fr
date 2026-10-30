@@ -1,8 +1,8 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use crate::testbed::{Testbed, TestbedUpdateParams};
 use dash_frontend::frontend::{self, FrontendUpdateParams};
-use wgui::{layout::Layout, theme::WguiTheme};
+use wgui::{gfx::WGfx, i18n::Locale, layout::Layout, theme::WguiTheme};
 use wlx_common::{
 	async_executor::AsyncExecutor, dash_interface_emulated::DashInterfaceEmulated,
 	locale::WayVRLangProvider,
@@ -14,9 +14,10 @@ pub struct TestbedDashboard {
 }
 
 impl TestbedDashboard {
-	pub fn new() -> anyhow::Result<Self> {
-		let interface = DashInterfaceEmulated::new();
+	pub fn new(gfx: Arc<WGfx>) -> anyhow::Result<Self> {
 		let lang_provider = WayVRLangProvider::default();
+		let locale = Locale::from_env(&lang_provider);
+		let interface = DashInterfaceEmulated::new(gfx, &locale);
 		let palette_name = std::env::var("PALETTE").unwrap_or_else(|_| "Default".to_string());
 		let executor = wlx_common::async_executor::create_local();
 

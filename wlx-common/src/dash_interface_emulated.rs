@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
 use slotmap::{DenseSlotMap, new_key_type};
 use wayvr_ipc::{
 	packet_client::WvrProcessLaunchParams,
 	packet_server::{WvrProcess, WvrProcessHandle, WvrWindow, WvrWindowHandle},
 };
+use wgui::{gfx::WGfx, i18n::Locale};
 
 use crate::{
 	config::GeneralConfig,
-	dash_interface::{self, ConfigChangeKind, DashInterface, DashPlayspaceTask},
+	dash_interface::{self, ConfigChangeKind, DashBackendTask, DashInterface, DashPlayspaceTask},
 	desktop_finder::DesktopFinder,
 };
 
@@ -66,10 +69,11 @@ pub struct DashInterfaceEmulated {
 	brightness: f32,
 	debug_frame_id: u64,
 	debug_counter: u64,
+	gfx: Arc<WGfx>,
 }
 
 impl DashInterfaceEmulated {
-	pub fn new() -> Self {
+	pub fn new(gfx: Arc<WGfx>, locale: &Locale) -> Self {
 		let mut processes = DenseSlotMap::<EmuProcessHandle, EmuProcess>::default();
 		let process_handle = processes.insert(EmuProcess {
 			name: String::from("My app"),
@@ -81,7 +85,7 @@ impl DashInterfaceEmulated {
 			visible: true,
 		});
 
-		let mut desktop_finder = DesktopFinder::new();
+		let mut desktop_finder = DesktopFinder::new(locale);
 		desktop_finder.refresh();
 
 		// Use serde defaults
@@ -129,17 +133,16 @@ impl DashInterfaceEmulated {
 			brightness: 1.0,
 			debug_counter: 0,
 			debug_frame_id: 0,
+			gfx,
 		}
 	}
 }
 
-impl Default for DashInterfaceEmulated {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl DashInterface<()> for DashInterfaceEmulated {
+	fn enumerate_vulkan_devices(&mut self, _: &mut ()) -> anyhow::Result<Vec<String>> {
+		self.gfx.enumerate_devices()
+	}
+
 	fn window_list(&mut self, _: &mut ()) -> anyhow::Result<Vec<WvrWindow>> {
 		Ok(self.windows.iter().map(|(handle, w)| w.to(handle)).collect())
 	}
@@ -219,6 +222,11 @@ impl DashInterface<()> for DashInterfaceEmulated {
 		Ok(())
 	}
 
+	fn backend_task(&mut self, _: &mut (), _: DashBackendTask) -> anyhow::Result<()> {
+		// stub!
+		Ok(())
+	}
+
 	fn desktop_finder<'a>(&'a mut self, _: &'a mut ()) -> &'a mut DesktopFinder {
 		&mut self.desktop_finder
 	}
@@ -230,6 +238,8 @@ impl DashInterface<()> for DashInterfaceEmulated {
 	fn config_changed(&mut self, _: &mut (), _: ConfigChangeKind) {}
 
 	fn restart(&mut self, _data: &mut ()) {}
+
+	fn close(&mut self, _data: &mut ()) {}
 
 	fn toggle_dashboard(&mut self, _data: &mut ()) {}
 

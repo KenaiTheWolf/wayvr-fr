@@ -57,11 +57,7 @@ use std::{
 };
 use wayland_protocols::xdg::shell::server::xdg_toplevel;
 use wayvr_ipc::packet_client::PositionMode;
-use wgui::{
-    gfx::{ImageView, WGfx},
-    globals::WguiGlobals,
-    log::LogErr,
-};
+use wgui::{gfx::ImageView, globals::WguiGlobals, log::LogErr};
 use wlx_capture::frame::Transform;
 use wlx_common::{
     astr_containers::AStrMapExt,
@@ -169,6 +165,7 @@ pub struct WvrServerState {
     pub manager: client::WayVRCompositor,
     pub wm: window::WindowManager,
     pub processes: DenseSlotMap<process::ProcessHandle, process::Process>,
+    pub dbus_address: Option<Arc<str>>,
     pub tasks: SyncEventQueue<WayVRTask>,
     ticks: u64,
     cur_modifiers: u8,
@@ -178,6 +175,7 @@ pub struct WvrServerState {
     process_overlays: HashMap<process::ProcessHandle, Vec<OverlayID>>,
     input_capture: Option<InputCapture>,
     input_capture_init_attempted: bool,
+    capture_input: bool,
     has_input_focus: bool,
     grab_toast_sent: bool,
 }
@@ -201,9 +199,9 @@ const WAYVR_SCREEN_RES: [i32; 2] = [2560, 1440];
 
 impl WvrServerState {
     pub fn new(
-        gfx: Arc<WGfx>,
         gfx_extras: &WGfxExtras,
         config: &GeneralConfig,
+        capture_input: bool,
     ) -> anyhow::Result<Self> {
         const fn filter_allow_any(_: &wayland_server::Client) -> bool {
             true
@@ -317,7 +315,7 @@ impl WvrServerState {
 
         let tasks = SyncEventQueue::new();
 
-        let dma_importer = ImageImporter::new(gfx);
+        let dma_importer = ImageImporter::new(gfx_extras.gfx_pool.clone());
 
         let state = Application {
             output,
@@ -357,6 +355,7 @@ impl WvrServerState {
         Ok(Self {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
             processes: Default::default(),
+            dbus_address: None,
             wm: window::WindowManager::new(),
             ticks: 0,
             tasks,
@@ -367,13 +366,13 @@ impl WvrServerState {
             process_overlays: HashMap::new(),
             input_capture: None,
             input_capture_init_attempted: false,
+            capture_input,
             has_input_focus: false,
             grab_toast_sent: false,
         })
     }
 
     #[allow(clippy::too_many_lines)]
-    #[allow(clippy::significant_drop_tightening)]
     pub fn tick_events(app: &mut AppState) -> anyhow::Result<()> {
         let Some(wvr_server) = app.wvr_server.as_mut() else {
             return Ok(());
@@ -992,6 +991,7 @@ impl WvrServerState {
             &mut app.audio,
             &app.wgui_globals,
             &app.session.config,
+            &app.dbus,
         );
 
         wvr_server.ticks += 1;
@@ -1181,6 +1181,7 @@ impl WvrServerState {
         audio: &mut Box<dyn audio::AudioProvider>,
         globals: &WguiGlobals,
         config: &GeneralConfig,
+        dbus: &DbusConnector,
     ) {
         let input_capture = match (self.input_capture.as_mut(), config.wvr_input_capture) {
             (Some(cap), InputCaptureMethod::Evdev) => cap,
@@ -1189,7 +1190,8 @@ impl WvrServerState {
                 return;
             }
             (None, InputCaptureMethod::Evdev) if !self.input_capture_init_attempted => {
-                self.input_capture = InputCapture::new()
+                let capture_input = self.capture_input;
+                self.input_capture = InputCapture::new(dbus.address().cloned(), capture_input)
                     .log_err("Could not initialize evdev input capture")
                     .ok();
                 self.input_capture_init_attempted = true;
@@ -1199,7 +1201,7 @@ impl WvrServerState {
                     let text = &globals
                         .i18n()
                         .translate("NOTIFICATION.CANNOT_CAPTURE_KBD_MOUSE");
-                    let _ = DbusConnector::notify_send("WayVR", text, 1, 5000, 0, true);
+                    let _ = dbus.notify_send("WayVR", text, 1, 5000, 0, true);
                     return;
                 }
             }
@@ -1331,7 +1333,7 @@ impl WvrServerState {
                     if !self.grab_toast_sent {
                         self.grab_toast_sent = true;
                         let text = &globals.i18n().translate("NOTIFICATION.WE_ARE_GRABBING");
-                        let _ = DbusConnector::notify_send("WayVR", text, 1, 5000, 0, true);
+                        let _ = dbus.notify_send("WayVR", text, 1, 5000, 0, true);
                     }
                 }
                 input_capture::CapturedEvent::Ungrabbed => {
@@ -1768,6 +1770,9 @@ impl WvrServerState {
         // these go to env for flatpak as well
         cmd.env("WAYLAND_DISPLAY", wayland_display);
         cmd.env("DISPLAY", x11_display);
+        if let Some(address) = &self.dbus_address {
+            cmd.env("DBUS_SESSION_BUS_ADDRESS", address.as_ref());
+        }
 
         if is_flatpak {
             // need to inject --env after "run" because --env is a

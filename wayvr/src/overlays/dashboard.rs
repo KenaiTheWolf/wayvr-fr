@@ -159,7 +159,7 @@ impl OverlayBackend for DashFrontend {
     }
 
     fn resume(&mut self, _app: &mut AppState) -> anyhow::Result<()> {
-        self.inner.layout.needs_redraw = true;
+        self.inner.layout.mark_redraw();
         self.timestep.reset();
         Ok(())
     }
@@ -394,6 +394,10 @@ impl DashInterfaceLive {
 impl DashInterface<AppState> for DashInterfaceLive {
     fn enumerate_vulkan_devices(&mut self, data: &mut AppState) -> anyhow::Result<Vec<String>> {
         data.gfx.enumerate_devices()
+    }
+
+    fn get_version_string(&self, _: &mut AppState) -> String {
+        crate::get_version_string()
     }
 
     fn window_list(&mut self, app: &mut AppState) -> anyhow::Result<Vec<WvrWindow>> {

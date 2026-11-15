@@ -123,10 +123,10 @@ pub trait Fetchable {
 	/// Fetch a component by widget ID (returns Component)
 	fn fetch_component_by_widget_id(&self, state: &LayoutState, widget_id: WidgetID) -> anyhow::Result<Component>;
 
-	/// Fetch a component by string ID and down‑cast it to a concrete component type `T` (see `components/mod.rs`)
+	/// Fetch a component by string ID and down-cast it to a concrete component type `T` (see `components/mod.rs`)
 	fn fetch_component_as<T: 'static>(&self, id: &str) -> anyhow::Result<Rc<T>>;
 
-	/// Fetch a component by widget ID and down‑cast it to a concrete component type `T` (see `components/mod.rs`)
+	/// Fetch a component by widget ID and down-cast it to a concrete component type `T` (see `components/mod.rs`)
 	fn fetch_component_from_widget_id_as<T: 'static>(
 		&self,
 		state: &LayoutState,
@@ -139,7 +139,7 @@ pub trait Fetchable {
 	/// Retrieve the widget associated with a string ID, returning a `WidgetPair` (id and widget itself)
 	fn fetch_widget(&self, state: &LayoutState, id: &str) -> anyhow::Result<WidgetPair>;
 
-	/// Retrieve a widget by string ID and down‑cast its inner value to type `T` (see `widget/mod.rs`)
+	/// Retrieve a widget by string ID and down-cast its inner value to type `T` (see `widget/mod.rs`)
 	fn fetch_widget_as<'a, T: 'static>(&self, state: &'a LayoutState, id: &str) -> anyhow::Result<RefMut<'a, T>>;
 }
 
@@ -1141,24 +1141,21 @@ fn parse_widget_universal(ctx: &mut ParserContext, widget: &WidgetPair, attribs:
 				ctx.insert_id(&pair.value, widget.id);
 			}
 			"new_pass" => {
-				if let Some(num) = parse_i32(&pair.value) {
-					widget.widget.state().flags.new_pass = num != 0;
-				} else {
-					ctx.print_invalid_attrib(tag_name, &pair.attrib, &pair.value);
+				let mut b = false;
+				if ctx.parse_check_bool(tag_name, &pair.attrib, &pair.value, &mut b) {
+					widget.widget.state().flags.new_pass = b;
 				}
 			}
 			"interactable" => {
-				if let Some(num) = parse_i32(&pair.value) {
-					widget.widget.state().flags.interactable = num != 0;
-				} else {
-					ctx.print_invalid_attrib(tag_name, &pair.attrib, &pair.value);
+				let mut b = false;
+				if ctx.parse_check_bool(tag_name, &pair.attrib, &pair.value, &mut b) {
+					widget.widget.state().flags.interactable = b;
 				}
 			}
 			"consume_mouse_events" => {
-				if let Some(num) = parse_i32(&pair.value) {
-					widget.widget.state().flags.consume_mouse_events = num != 0;
-				} else {
-					ctx.print_invalid_attrib(tag_name, &pair.attrib, &pair.value);
+				let mut b = false;
+				if ctx.parse_check_bool(tag_name, &pair.attrib, &pair.value, &mut b) {
+					widget.widget.state().flags.consume_mouse_events = b;
 				}
 			}
 			_ => {}
@@ -1230,6 +1227,7 @@ fn parse_child<'a>(
 		"CheckBox" => (
 			Default::default(),
 			Some(parse_component_checkbox(
+				file,
 				ctx,
 				parent_id,
 				&attribs,
@@ -1240,6 +1238,7 @@ fn parse_child<'a>(
 		"RadioBox" => (
 			Default::default(),
 			Some(parse_component_checkbox(
+				file,
 				ctx,
 				parent_id,
 				&attribs,
@@ -1284,7 +1283,8 @@ fn parse_child<'a>(
 
 	// check for custom attributes (if the callback is set)
 	if let Some(widget_id) = new_widget_id
-		&& let Some(on_custom_attribs) = &ctx.doc_params.extra.on_custom_attribs
+		&& let Some(extra) = ctx.doc_params.extra
+		&& let Some(on_custom_attribs) = &extra.on_custom_attribs
 	{
 		let mut pairs = SmallVec::<[AttribPair; 4]>::new();
 
@@ -1437,16 +1437,30 @@ pub type OnCustomAttribsFunc = Rc<dyn Fn(CustomAttribsInfo)>;
 #[derive(Default, Clone)]
 pub struct ParseDocumentExtra {
 	pub on_custom_attribs: Option<OnCustomAttribsFunc>, // all attributes with '_' character prepended
-	pub dev_mode: bool,
 	pub extra_vars: HashMap<Rc<str>, Rc<str>>,
 	pub root_dir: Option<AssetPathRc>,
 }
 
-// filled-in by you in `new_layout_from_assets` function
+// filled-in by you in the `new_layout_from_assets` function
 pub struct ParseDocumentParams<'a> {
-	pub globals: WguiGlobals,      // mandatory field
-	pub path: AssetPathRef<'a>,    // XML path, mandatory field
-	pub extra: ParseDocumentExtra, // optional field, can be Default-ed
+	pub path: AssetPathRef<'a>,                // XML path, mandatory field
+	pub extra: Option<&'a ParseDocumentExtra>, // optional field, can be Default-ed
+}
+
+impl<'a> ParseDocumentParams<'a> {
+	pub const fn builtin(path: &'a str) -> Self {
+		Self {
+			path: AssetPathRef::BuiltIn(path),
+			extra: None,
+		}
+	}
+
+	pub const fn builtin_extra(path: &'a str, extra: &'a ParseDocumentExtra) -> Self {
+		Self {
+			path: AssetPathRef::BuiltIn(path),
+			extra: Some(extra),
+		}
+	}
 }
 
 pub fn parse_from_assets(
@@ -1456,15 +1470,18 @@ pub fn parse_from_assets(
 ) -> anyhow::Result<ParserState> {
 	let parser_data = ParserData::default();
 	let mut ctx = create_default_context(doc_params, layout, &parser_data);
-	ctx.populate_extra_variables(&doc_params.extra.extra_vars);
 
 	let xml_path = doc_params.path.to_rc();
 	let xml_dir = xml_path.strip_filename();
-	let root_dir = if let Some(root_dir) = &doc_params.extra.root_dir {
-		root_dir.clone()
-	} else {
-		xml_path.replace_path(Path::new("/").into())
+
+	let mut root_dir = None;
+
+	if let Some(extra) = doc_params.extra {
+		ctx.populate_extra_variables(&extra.extra_vars);
+		root_dir = extra.root_dir.clone();
 	};
+
+	let root_dir = root_dir.unwrap_or_else(|| xml_path.replace_path(Path::new("/").into()));
 
 	let (file, node_layout) = get_doc_from_xml_asset_path(&ctx, &root_dir, doc_params.path)?;
 	parse_document_root(&file, &mut ctx, parent_id, node_layout)?;
@@ -1485,10 +1502,11 @@ pub fn parse_from_assets(
 }
 
 pub fn new_layout_from_assets(
+	globals: &WguiGlobals,
 	doc_params: &ParseDocumentParams,
 	layout_params: LayoutParams,
 ) -> anyhow::Result<(Layout, ParserState)> {
-	let mut layout = Layout::new(doc_params.globals.clone(), layout_params)?;
+	let mut layout = Layout::new(globals.clone(), layout_params)?;
 	let widget = layout.content_root_widget;
 	let state = parse_from_assets(doc_params, &mut layout, widget)?;
 	Ok((layout, state))

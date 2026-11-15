@@ -63,7 +63,6 @@ pub struct Frontend<T> {
 	// single-threaded async runtime executor
 	pub executor: AsyncExecutor,
 
-	#[allow(dead_code)]
 	state: ParserState,
 
 	current_tab: Option<Box<dyn Tab<T>>>,
@@ -125,6 +124,7 @@ pub enum FrontendTask {
 	ShowPowerSettings(WidgetID /* source widget */),
 	UpdateAudioSettingsView,
 	RecenterPlayspace,
+	ResetSpaceDrag,
 	PushToast(Translation),
 	PlaySound(SoundType),
 	OpenURL(Rc<str>),
@@ -158,11 +158,8 @@ impl<T: 'static> Frontend<T> {
 		)?;
 
 		let (layout, state) = wgui::parser::new_layout_from_assets(
-			&ParseDocumentParams {
-				globals: globals.clone(),
-				path: AssetPathRef::BuiltIn("gui/dashboard.xml"),
-				extra: Default::default(),
-			},
+			&globals,
+			&ParseDocumentParams::builtin("gui/dashboard.xml"),
 			LayoutParams {
 				resize_to_parent: true,
 				theme: params.theme,
@@ -297,7 +294,6 @@ impl<T: 'static> Frontend<T> {
 			self.popup_dialog_box.clone(),
 			self.tasks.clone(),
 			views::dialog_box::Params {
-				globals: self.globals.clone(),
 				message: Translation::from_translation_key(translation_key),
 				entries: views::dialog_box::get_entries_yes_no(),
 				on_action_click: Box::new(move |action| {
@@ -441,6 +437,7 @@ impl<T: 'static> Frontend<T> {
 			FrontendTask::ShowPowerSettings(pos) => self.action_show_power_settings(pos)?,
 			FrontendTask::UpdateAudioSettingsView => self.action_update_audio_settings()?,
 			FrontendTask::RecenterPlayspace => self.action_recenter_playspace(params.data)?,
+			FrontendTask::ResetSpaceDrag => self.action_reset_space_drag(params.data)?,
 			FrontendTask::PushToast(content) => self.toast_manager.push(content),
 			FrontendTask::PlaySound(sound_type) => self.queue_play_sound(sound_type),
 			FrontendTask::HideDashboard => self.action_hide_dashboard(params.data),
@@ -583,6 +580,12 @@ impl<T: 'static> Frontend<T> {
 			&self.state.fetch_component_as::<ComponentButton>("btn_recenter")?,
 			FrontendTask::RecenterPlayspace,
 		);
+		self.tasks.handle_button(
+			&self
+				.state
+				.fetch_component_as::<ComponentButton>("btn_reset_space_drag")?,
+			FrontendTask::ResetSpaceDrag,
+		);
 
 		Ok(())
 	}
@@ -641,6 +644,11 @@ impl<T: 'static> Frontend<T> {
 
 	fn action_recenter_playspace(&mut self, data: &mut T) -> anyhow::Result<()> {
 		self.interface.playspace_task(data, DashPlayspaceTask::Recenter)?;
+		Ok(())
+	}
+
+	fn action_reset_space_drag(&mut self, data: &mut T) -> anyhow::Result<()> {
+		self.interface.playspace_task(data, DashPlayspaceTask::Reset)?;
 		Ok(())
 	}
 

@@ -1,15 +1,12 @@
 use crate::{
 	frontend::{FrontendTask, FrontendTasks},
-	tab::TabType,
 	util::popup_manager::{MountPopupOnceParams, PopupHolder},
 	views::{ViewTrait, ViewUpdateParams},
 };
 use std::{rc::Rc, sync::Arc};
 use wgui::color::WguiColorName;
 use wgui::{
-	assets::AssetPathRef,
 	components::button::ComponentButton,
-	globals::WguiGlobals,
 	i18n::Translation,
 	layout::{Layout, LayoutTask, WidgetID},
 	log::LogErr,
@@ -29,7 +26,6 @@ enum Task {
 }
 
 pub struct Params<'a> {
-	pub globals: WguiGlobals,
 	pub layout: &'a mut Layout,
 	pub parent_id: WidgetID,
 	pub frontend_tasks: &'a FrontendTasks,
@@ -53,8 +49,6 @@ impl ViewTrait for View {
 					globals.palette = new_palette;
 					par.general_config.color_palette = profile.into();
 					par.layout.tasks.push(LayoutTask::RefreshPalette);
-					// this works because LookAndFeel is the first tab
-					self.frontend_tasks.push(FrontendTask::SetTab(TabType::Settings));
 					par.config_change_kind.replace(ConfigChangeKind::WguiColorPaletteChange);
 					if let Some(c) = self.on_close_request.take() {
 						c();
@@ -91,13 +85,8 @@ macro_rules! insert_colors {
 
 impl View {
 	pub fn new(params: Params) -> anyhow::Result<Self> {
-		let doc_params = &ParseDocumentParams {
-			globals: params.globals.clone(),
-			path: AssetPathRef::BuiltIn("gui/view/color_palettes.xml"),
-			extra: Default::default(),
-		};
-
-		let mut parser_state = wgui::parser::parse_from_assets(doc_params, params.layout, params.parent_id)?;
+		let doc_params = ParseDocumentParams::builtin("gui/view/color_palettes.xml");
+		let mut parser_state = wgui::parser::parse_from_assets(&doc_params, params.layout, params.parent_id)?;
 
 		let list_parent = parser_state.fetch_widget(&params.layout.state, "list_parent")?.id;
 
@@ -143,7 +132,7 @@ impl View {
 			);
 
 			parser_state.instantiate_template(
-				doc_params,
+				&doc_params,
 				"ColorPaletteButton",
 				params.layout,
 				list_parent,
@@ -196,7 +185,7 @@ impl View {
 			);
 
 			parser_state.instantiate_template(
-				doc_params,
+				&doc_params,
 				"ColorPaletteButton",
 				params.layout,
 				list_parent,
@@ -216,7 +205,7 @@ impl View {
 		}
 
 		parser_state.instantiate_template(
-			doc_params,
+			&doc_params,
 			"CustomPaletteButton",
 			params.layout,
 			list_parent,
@@ -239,12 +228,7 @@ impl View {
 	}
 }
 
-pub fn mount_popup(
-	frontend_tasks: FrontendTasks,
-	globals: WguiGlobals,
-	popup: PopupHolder<View>,
-	current_palette: Arc<str>,
-) {
+pub fn mount_popup(frontend_tasks: FrontendTasks, popup: PopupHolder<View>, current_palette: Arc<str>) {
 	frontend_tasks
 		.clone()
 		.push(FrontendTask::MountPopupOnce(MountPopupOnceParams::new(
@@ -252,7 +236,6 @@ pub fn mount_popup(
 			Box::new(move |data| {
 				let on_close_request = popup.get_close_callback(data.layout);
 				let view = View::new(Params {
-					globals: globals.clone(),
 					layout: data.layout,
 					parent_id: data.id_content,
 					frontend_tasks: &frontend_tasks,

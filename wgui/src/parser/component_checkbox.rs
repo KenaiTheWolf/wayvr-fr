@@ -1,12 +1,14 @@
 use crate::{
+	assets::AssetPathRc,
+	color::WguiColor,
 	components::{Component, checkbox, radio_group::ComponentRadioGroup},
 	i18n::Translation,
 	layout::WidgetID,
 	parser::{
-		AttribPair, ParserContext,
+		AttribPair, ParserContext, ParserFile, get_asset_path_from_kv,
 		helpers::{TooltipAttribs, parse_attrib_tooltip},
 		process_component,
-		style::parse_style,
+		style::{parse_color_opt, parse_style},
 	},
 };
 
@@ -17,6 +19,7 @@ pub enum CheckboxKind {
 }
 
 pub fn parse_component_checkbox(
+	file: &ParserFile,
 	ctx: &mut ParserContext,
 	parent_id: WidgetID,
 	attribs: &[AttribPair],
@@ -28,6 +31,9 @@ pub fn parse_component_checkbox(
 	let mut checked: bool = false;
 	let mut component_value = None;
 	let mut tooltip = TooltipAttribs::default();
+	let mut sprite_color: Option<WguiColor> = None;
+	let mut sprite_src: Option<AssetPathRc> = None;
+	let mut color_checked: Option<WguiColor> = None;
 
 	let style = parse_style(ctx, attribs, tag_name);
 
@@ -52,6 +58,19 @@ pub fn parse_component_checkbox(
 			}
 			"checked" => {
 				ctx.parse_check_bool(tag_name, key, value, &mut checked);
+			}
+			"sprite_color" => {
+				parse_color_opt(ctx, tag_name, key, value, &mut sprite_color);
+			}
+			"color_checked" => {
+				parse_color_opt(ctx, tag_name, key, value, &mut color_checked);
+			}
+			"sprite_src" | "sprite_src_ext" | "sprite_src_builtin" | "sprite_src_internal" => {
+				let asset_path = get_asset_path_from_kv(file, "sprite_", key, value);
+
+				if !value.is_empty() {
+					sprite_src = Some(asset_path);
+				}
 			}
 			_ => {
 				parse_attrib_tooltip(ctx, tag_name, pair, &mut tooltip);
@@ -92,7 +111,9 @@ pub fn parse_component_checkbox(
 			radio_group,
 			value: component_value,
 			tooltip: tooltip.get_info(),
-			color_checked: None,
+			color_checked,
+			sprite_src: sprite_src.as_ref().map(|s| s.as_ref()),
+			sprite_color,
 		},
 	)?;
 
